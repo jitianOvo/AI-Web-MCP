@@ -490,6 +490,23 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     });
     return false;
   }
+  if (message.type === "bridge_check_image_upload") {
+    const composer = firstMatch(GPT_WEB_SELECTORS.input);
+    let images = [];
+    let uploading = false;
+    let textLength = 0;
+    let hasContent = false;
+    if (composer) {
+      images = Array.from(composer.querySelectorAll("img, [data-testid*='image'], [class*='thumbnail'], [class*='attachment']"));
+      uploading = Boolean(composer.querySelector("[data-testid*='upload'], [class*='uploading'], [aria-busy='true'], [data-state*='uploading']"));
+      textLength = (composer.innerText || "").length;
+      hasContent = images.length > 0 || composer.children.length > 0 || textLength > 0;
+    }
+    const imageCount = images.length;
+    const ready = hasContent && !uploading;
+    sendResponse({ success: true, image_count: imageCount, uploading, ready, text_length: textLength, has_content: hasContent });
+    return false;
+  }
   if (message.type === "bridge_new_chat") {
     startNewChat().then((result) => sendResponse({ success: true, ...result })).catch((error) => sendResponse({ success: false, code: error.code || "NEW_CHAT_FAILED", message: error.message }));
     return true;

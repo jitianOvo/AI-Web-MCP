@@ -161,6 +161,28 @@ class BridgeClient:
             "task_group_id": task_group_id,
         }, timeout=timeout_ms / 1000 + 20)
 
+    def send_image(self, image_path: str, prompt: str = "请描述这张图片", conversation_id: str = "", expected_format: str = "text", timeout_ms: int = 600000, target_id: str = "") -> dict[str, Any]:
+        """Ask the web ChatGPT to understand a local image (clipboard-paste path)."""
+        return self._request("POST", "/api/chat/send-image", {
+            "image_path": image_path,
+            "prompt": prompt,
+            "conversation_id": conversation_id,
+            "expected_format": expected_format,
+            "timeout_ms": timeout_ms,
+            "target_id": target_id,
+        }, timeout=timeout_ms / 1000 + 20)
+
+    def send_image_only(self, prompt: str = "请描述这些图片", conversation_id: str = "", expected_format: str = "text", timeout_ms: int = 600000, target_id: str = "") -> dict[str, Any]:
+        """Send a prompt with images already pasted in the composer (skip paste)."""
+        return self._request("POST", "/api/chat/send-image", {
+            "image_path": "", "skip_paste": True,
+            "prompt": prompt,
+            "conversation_id": conversation_id,
+            "expected_format": expected_format,
+            "timeout_ms": timeout_ms,
+            "target_id": target_id,
+        }, timeout=timeout_ms / 1000 + 20)
+
 
     def read(self, conversation_id: str, after_sequence: int = 0, limit: int = 100) -> dict[str, Any]:
         return self._request("GET", f"/api/chat/messages?conversation_id={urllib.parse.quote(conversation_id)}&after={int(after_sequence)}&limit={int(limit)}")

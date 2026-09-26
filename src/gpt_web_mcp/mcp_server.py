@@ -133,6 +133,19 @@ if FastMCP is not None:
         return client.send(content, conversation_id, expected_format, timeout_ms, target_id, persona_id, task_group_id)
 
     @mcp.tool()
+    def ask_chatgpt_image(image_path: str, question: str = "请描述这张图片", conversation_id: str = "current", timeout_ms: int = 600000, target_id: str = "") -> dict[str, Any]:
+        """Send a local image to the bound ChatGPT web page for visual understanding.
+        Uses the clipboard-paste path; the web ChatGPT answers with a description or analysis.
+        Only needed when the current Codex model lacks vision."""
+        client = BridgeClient(timeout=timeout_ms / 1000 + 30)
+        client.ensure_running()
+        bound = client.bound_tab()
+        effective_target = target_id or bound.get("bound_target_id", "")
+        if not effective_target:
+            raise RuntimeError("NO_BOUND_TAB: 请先绑定 ChatGPT 标签页。")
+        return client.send_image(image_path, question, conversation_id, "text", timeout_ms, effective_target)
+
+    @mcp.tool()
     def persona_upsert(persona_id: str, name: str, system_prompt: str = "", config_json: str = "{}") -> dict[str, Any]:
         """Create or update a reusable persona profile stored by the local Bridge."""
         client = BridgeClient()

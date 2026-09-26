@@ -88,22 +88,31 @@ static void ActivateWindow(HWND w) {
 
 int wmain(int argc, wchar_t** argv) {
     if (argc < 2) return 2;
-    std::wifstream f(argv[1], std::ios::binary);
-    if (!f) return 3;
-    std::wstring text((std::istreambuf_iterator<wchar_t>(f)), std::istreambuf_iterator<wchar_t>());
-    if (text.empty()) return 3;
-
-    if (!OpenClipboard(0)) return 4;
-    EmptyClipboard();
-    HGLOBAL h = GlobalAlloc(GMEM_MOVEABLE, (text.size() + 1) * sizeof(wchar_t));
-    if (h) {
-        wchar_t* dst = (wchar_t*)GlobalLock(h);
-        wcscpy_s(dst, text.size() + 1, text.c_str());
-        GlobalUnlock(h);
-        SetClipboardData(CF_UNICODETEXT, h);
+    bool paste_only = false;
+    std::wstring arg1 = L"";
+    if (argc >= 2) arg1 = argv[1];
+    if (arg1 == L"--paste") {
+        paste_only = true;
+    } else {
+        FILE* f = _wfopen(arg1.c_str(), L"rb");
+        if (!f) return 3;
+        std::wstring text;
+        wchar_t buf[4096];
+        size_t n;
+        while ((n = fread(buf, sizeof(wchar_t), 4096, f)) > 0) text.append(buf, n);
+        fclose(f);
+        if (text.empty()) return 3;
+        if (!OpenClipboard(0)) return 4;
+        EmptyClipboard();
+        HGLOBAL h = GlobalAlloc(GMEM_MOVEABLE, (text.size() + 1) * sizeof(wchar_t));
+        if (h) {
+            wchar_t* dst = (wchar_t*)GlobalLock(h);
+            wcscpy_s(dst, text.size() + 1, text.c_str());
+            GlobalUnlock(h);
+            SetClipboardData(CF_UNICODETEXT, h);
+        }
+        CloseClipboard();
     }
-    CloseClipboard();
-
     HWND w = FindTargetWindow();
     if (!w) return 5;
     HWND fg = FindForegroundEdge();
@@ -111,7 +120,9 @@ int wmain(int argc, wchar_t** argv) {
     ActivateWindow(w);
     Sleep(350);
     SendCtrlV();
-    Sleep(350);
-    SendEnter();
+    if (!paste_only) {
+        Sleep(350);
+        SendEnter();
+    }
     return 0;
 }

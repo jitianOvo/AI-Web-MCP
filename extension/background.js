@@ -118,6 +118,106 @@ async function focusEditorFromBridge(message, targetId) {
   await activateBoundTab(targetId);
 }
 
+// Vision path: the local bridge has already placed an image on the system
+// clipboard.  Focus the composer, paste with a real Ctrl+V, wait for the page
+// upload to finish, then send prompt + text through the normal CDP pipeline.
+async function sendImageFromBridge(message, targetId) {
+  const requestId = String(message.request_id || "");
+  try {
+    const tab = await getBoundTab(targetId);
+    if (!tab) throw bridgeError("CHATGPT_TAB_NOT_FOUND", "请先绑定 ChatGPT 标签页");
+    sendToBridge(targetId, { type: "progress", request_id: requestId, stage: "VISION_PASTE", detail: "pasting image" });
+    await ensureWindowForeground(tab.id);
+    await debuggerAttach(tab.id);
+    try {
+      await cdpFocusEditor(tab.id);  // select-all clears composer; fine before paste
+      // Ctrl+V dispatches a trusted paste with the system clipboard image.
+      // Full Ctrl+V key sequence (rawKeyDown + char + keyUp) so the renderer
+      // performs a real paste from the system clipboard.
+      await cdpCommand(tab.id, "Input.dispatchKeyEvent", { type: "rawKeyDown", key: "v", code: "KeyV", windowsVirtualKeyCode: 86, nativeVirtualKeyCode: 86, modifiers: 2 });
+      await cdpCommand(tab.id, "Input.dispatchKeyEvent", { type: "char", key: "v", text: "v", unmodifiedText: "v", windowsVirtualKeyCode: 86, nativeVirtualKeyCode: 86, modifiers: 2 });
+      await cdpCommand(tab.id, "Input.dispatchKeyEvent", { type: "keyUp", key: "v", code: "KeyV", windowsVirtualKeyCode: 86, nativeVirtualKeyCode: 86, modifiers: 2 });
+      await new Promise((resolve) => setTimeout(resolve, 300));
+    } finally {
+      await debuggerDetach(tab.id);
+    }
+    // When the bridge already pasted the image at the OS level (--paste), skip
+    // the CDP Ctrl+V and go straight to waiting for the upload.
+    if (message.pasted !== true) {
+      await ensureWindowForeground(tab.id);
+      await debuggerAttach(tab.id);
+      try {
+        await cdpFocusEditor(tab.id);  // select-all clears composer; fine before paste
+        // Full Ctrl+V key sequence (rawKeyDown + char + keyUp) so the renderer
+        // performs a real paste from the system clipboard.
+        await cdpCommand(tab.id, "Input.dispatchKeyEvent", { type: "rawKeyDown", key: "v", code: "KeyV", windowsVirtualKeyCode: 86, nativeVirtualKeyCode: 86, modifiers: 2 });
+        await cdpCommand(tab.id, "Input.dispatchKeyEvent", { type: "char", key: "v", text: "v", unmodifiedText: "v", windowsVirtualKeyCode: 86, nativeVirtualKeyCode: 86, modifiers: 2 });
+        await cdpCommand(tab.id, "Input.dispatchKeyEvent", { type: "keyUp", key: "v", code: "KeyV", windowsVirtualKeyCode: 86, nativeVirtualKeyCode: 86, modifiers: 2 });
+        await new Promise((resolve) => setTimeout(resolve, 300));
+      } finally {
+        await debuggerDetach(tab.id);
+      }
+    }
+    // Wait until the composer shows the uploaded image and upload finished.
+    sendToBridge(targetId, { type: "progress", request_id: requestId, stage: "VISION_UPLOAD", detail: "waiting upload" });
+    const uploadDeadline = Date.now() + 60000;
+    let ready = false;
+    while (Date.now() < uploadDeadline) {
+      const state = await sendTaskToPage(tab.id, { type: "bridge_check_image_upload" }, 5000);
+      if (state && state.ready) { ready = true; break; }
+      await new Promise((resolve) => setTimeout(resolve, 800));
+    }
+    if (!ready) throw bridgeError("IMAGE_UPLOAD_TIMEOUT", "图片粘贴后未在页面确认上屏");
+    sendToBridge(targetId, { type: "progress", request_id: requestId, stage: "VISION_UPLOADED", detail: "upload ready" });
+    // Now send prompt + text through the standard pipeline.
+    // Append prompt text after the pasted image (do NOT select-all; that would
+    // delete the image).  Then Enter submits the image+text message.
+    const prompt = String(message.prompt || "请描述这张图片");
+    await debuggerAttach(tab.id);
+    try {
+      await cdpFocusComposerEnd(tab.id);  // caret to end, keep the pasted image
+      await cdpCommand(tab.id, "Input.insertText", { text: prompt });
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      const btnRes = await cdpCommand(tab.id, "Runtime.evaluate", {
+        expression: "(function(){const b=Array.from(document.querySelectorAll('main button')).find(x=>(x.getAttribute('aria-label')||'')==='发送'||(x.getAttribute('aria-label')||'').includes('Send')); return b ? {found:true, disabled:!!b.disabled} : {found:false};})()",
+        returnByValue: true,
+      });
+      const btn = (btnRes.result || {}).value || {};
+      if (!btn.found) throw bridgeError("SEND_BUTTON_NOT_FOUND", "未找到发送按钮");
+      if (!btn.disabled) {
+        await cdpPressKey(tab.id, "Enter", "Enter", 13, false);
+        await new Promise((resolve) => setTimeout(resolve, 300));
+      } else {
+        await cdpCommand(tab.id, "Runtime.evaluate", {
+          expression: "(function(){const b=Array.from(document.querySelectorAll('main button')).find(x=>(x.getAttribute('aria-label')||'')==='发送'||(x.getAttribute('aria-label')||'').includes('Send')); if(b&&!b.disabled){b.click(); return 'clicked';} return 'skip';})()",
+          returnByValue: true,
+        });
+      }
+    } finally {
+      await debuggerDetach(tab.id);
+    }
+    // Wait for user message + answer through the normal content pipeline.
+    const response = await sendTaskToPage(tab.id, {
+      type: "bridge_task",
+      request_id: requestId,
+      conversation_id: String(message.conversation_id || "current"),
+      prompt,
+      expected_format: String(message.expected_format || "text"),
+      timeout_ms: Number(message.timeout_ms || 600000),
+      input_backend: "verify",  // text already inserted; only wait+read
+    });
+    if (!response?.success) throw bridgeError(response?.code || "VISION_SEND_FAILED", response?.message || "图片消息发送失败");
+    sendToBridge(targetId, { type: "result", request_id: requestId, target_id: targetId, result: response.result, conversation_id: response.conversation_id, message_id: response.message_id });
+  } catch (error) {
+    sendToBridge(targetId, {
+      type: "error", request_id: requestId, target_id: targetId,
+      code: error.code || "VISION_SEND_FAILED", message: error.detail || error.message || String(error),
+    });
+  } finally {
+    await sendStatus(targetId);
+  }
+}
+
 async function activateBoundTab(targetId) {
   const tab = await getBoundTab(targetId);
   if (!tab) return null;
@@ -250,6 +350,7 @@ function connectBridge(targetId) {
     if (message.type === "check_state") await checkStateFromBridge(message, targetId);
     if (message.type === "reload_extension") await reloadExtensionFromBridge(message, targetId);
     if (message.type === "focus") await focusEditorFromBridge(message, targetId);
+    if (message.type === "send_image") await sendImageFromBridge(message, targetId);
   };
 }
 
@@ -494,6 +595,13 @@ async function cdpFocusEditor(tabId) {
 }
 
 async function cdpCaretAtEnd(tabId) {
+  await cdpCommand(tabId, "Runtime.evaluate", {
+    expression: `(function(){const e=${COMPOSER_JS}; if(!e) return false; e.focus(); const s=window.getSelection(); const r=document.createRange(); r.selectNodeContents(e); r.collapse(false); s.removeAllRanges(); s.addRange(r); return true;})()`,
+    returnByValue: true,
+  });
+}
+
+async function cdpFocusComposerEnd(tabId) {
   await cdpCommand(tabId, "Runtime.evaluate", {
     expression: `(function(){const e=${COMPOSER_JS}; if(!e) return false; e.focus(); const s=window.getSelection(); const r=document.createRange(); r.selectNodeContents(e); r.collapse(false); s.removeAllRanges(); s.addRange(r); return true;})()`,
     returnByValue: true,

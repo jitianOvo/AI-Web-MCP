@@ -1,9 +1,9 @@
 #define UNICODE
+#define _UNICODE
 #include <windows.h>
 #include <shellapi.h>
 #include <wininet.h>
 #include <string>
-#include <vector>
 #include <cstdio>
 
 #pragma comment(lib, "shell32.lib")
@@ -11,32 +11,29 @@
 #pragma comment(lib, "wininet.lib")
 #pragma comment(lib, "advapi32.lib")
 
-static HWND g_console = 0;
-static HICON g_icon = 0;
-static HWND g_msgwin = 0;
+static const wchar_t* MAIN_CLASS = L"GPTWebMCPMainWindow";
 static const wchar_t* MSG_CLASS = L"GPTWebMCPMsgWindow";
+static const int IDM_SHOW = 1;
+static const int IDM_TOGGLE = 2;
+static const int IDM_EXIT = 3;
+static const int TRAY_ID = 1;
+static const UINT WM_TRAY = WM_APP + 1;
 
-static void ToggleConsoleVisible();
-static void ShowTrayMenu();
-
-static LRESULT CALLBACK MsgProc(HWND hwnd, UINT msg, WPARAM w, LPARAM l) {
-  if (msg == WM_APP + 1) {
-    if (l == WM_LBUTTONUP || l == WM_LBUTTONDBLCLK) {
-      ToggleConsoleVisible();
-    } else if (l == WM_RBUTTONUP) {
-      ShowTrayMenu();
-    }
-    return 0;
-  }
-  if (msg == WM_DESTROY) PostQuitMessage(0);
-  return DefWindowProcW(hwnd, msg, w, l);
-}
+static HWND g_main = 0;
+static HWND g_msgwin = 0;
+static HICON g_icon = 0;
 static HANDLE g_child = 0;
 static HANDLE g_mutex = 0;
 static bool g_paused = false;
-static bool g_shutdown = false;
+static bool g_force_exit = false;
 static std::wstring g_root;
 static std::wstring g_token;
+static std::wstring g_status_bridge = L"-";
+static std::wstring g_status_ext = L"-";
+static std::wstring g_status_page = L"-";
+static std::wstring g_status_state = L"-";
+static std::wstring g_status_target = L"-";
+static HGLOBAL g_hText = 0;
 
 static std::wstring ExeDir() {
     wchar_t buf[MAX_PATH];
@@ -55,7 +52,6 @@ static std::wstring ReadConfigToken() {
     size_t n;
     while ((n = fread(buf, 1, sizeof(buf), f)) > 0) raw.append(buf, n);
     fclose(f);
-    // find "bridge_token":"..."
     std::string key = "\"bridge_token\":\"";
     size_t a = raw.find(key);
     if (a == std::string::npos) return L"";
@@ -68,7 +64,7 @@ static std::wstring ReadConfigToken() {
     return out;
 }
 
-static std::wstring HttpRequest(const wchar_t* method, const wchar_t* path) {
+static std::wstring HttpGet(const wchar_t* path) {
     std::wstring out;
     HINTERNET inet = InternetOpenW(L"GPT-Web-MCP", INTERNET_OPEN_TYPE_PRECONFIG, 0, 0, 0);
     if (!inet) return out;
@@ -76,11 +72,7 @@ static std::wstring HttpRequest(const wchar_t* method, const wchar_t* path) {
     HINTERNET conn = InternetOpenUrlW(inet, url.c_str(), 0, 0,
         INTERNET_FLAG_RELOAD | INTERNET_FLAG_NO_CACHE_WRITE, 0);
     if (!conn) { InternetCloseHandle(inet); return out; }
-    if (method[0] == L'P') {
-        std::wstring headers = L"X-Bridge-Token: " + g_token + L"\r\n";
-        HttpSendRequestW(conn, headers.c_str(), (DWORD)-1L, 0, 0);
-    }
-    char buf[2048];
+    char buf[8192];
     DWORD rd = 0;
     while (InternetReadFile(conn, buf, sizeof(buf) - 1, &rd) && rd > 0) {
         buf[rd] = 0;
@@ -91,30 +83,77 @@ static std::wstring HttpRequest(const wchar_t* method, const wchar_t* path) {
     return out;
 }
 
-static bool HttpOk(const wchar_t* path) {
-    std::wstring r = HttpRequest(L"GET", path);
+static bool HttpPost(const wchar_t* path) {
+    HINTERNET inet = InternetOpenW(L"GPT-Web-MCP", INTERNET_OPEN_TYPE_PRECONFIG, 0, 0, 0);
+    if (!inet) return false;
+    std::wstring url = L"http://127.0.0.1:8765" + std::wstring(path);
+    HINTERNET conn = InternetOpenUrlW(inet, url.c_str(), 0, 0,
+        INTERNET_FLAG_RELOAD | INTERNET_FLAG_NO_CACHE_WRITE, 0);
+    if (!conn) { InternetCloseHandle(inet); return false; }
+    std::wstring headers = L"X-Bridge-Token: " + g_token + L"\r\n";
+    HttpSendRequestW(conn, headers.c_str(), (DWORD)-1L, 0, 0);
+    InternetCloseHandle(conn);
+    InternetCloseHandle(inet);
+    return true;
+}
+
+static bool BridgeOnline() {
+    if (g_token.empty()) return false;
+    std::wstring r = HttpGet(L"/api/status");
     return r.find(L"\"bridge\":\"online\"") != std::wstring::npos;
 }
 
-static void Log(const wchar_t* fmt, ...) {
-    if (!g_console) return;
-    wchar_t line[1024];
-    va_list ap;
-    va_start(ap, fmt);
-    _vsnwprintf_s(line, 1024, _TRUNCATE, fmt, ap);
-    va_end(ap);
-    SYSTEMTIME st;
-    GetLocalTime(&st);
-    wchar_t stamp[64];
-    swprintf_s(stamp, 64, L"[%02d:%02d:%02d]", st.wHour, st.wMinute, st.wSecond);
-    HANDLE h = GetStdHandle(STD_OUTPUT_HANDLE);
-    DWORD w;
-    std::wstring msg = std::wstring(stamp) + L" " + line + L"\n";
-    WriteConsoleW(h, msg.c_str(), (DWORD)msg.size(), &w, 0);
+static void RefreshStatus() {
+    if (g_token.empty()) return;
+    std::wstring r = HttpGet(L"/api/status");
+    g_status_bridge = r.find(L"\"bridge\":\"online\"") != std::wstring::npos ? L"在线" : L"离线";
+    g_status_ext = r.find(L"\"extension\":\"connected\"") != std::wstring::npos ? L"已连接" : L"未连接";
+    g_status_page = r.find(L"\"page\":\"ready\"") != std::wstring::npos ? L"就绪" : L"未就绪";
+    g_status_state = L"idle";
+    size_t sp = r.find(L"\"response_state\":\"");
+    if (sp != std::wstring::npos) {
+        sp += 19;
+        size_t se = r.find(L"\"", sp);
+        if (se != std::wstring::npos) g_status_state = r.substr(sp, se - sp);
+    }
+    std::wstring tt = L"未绑定";
+    size_t tp = r.find(L"\"target_id\":\"");
+    if (tp != std::wstring::npos) {
+        tp += 13;
+        size_t te = r.find(L"\"", tp);
+        if (te != std::wstring::npos) {
+            std::wstring v = r.substr(tp, te - tp);
+            if (v != L"unbound" && !v.empty()) tt = v;
+        }
+    }
+    g_status_target = tt;
+}
+
+static void UpdateMainText(HWND hwnd) {
+    std::wstring text =
+        L"GPT Web MCP Bridge    版本 0.1.27\r\n\r\n"
+        L"桥服务: " + g_status_bridge + L"\r\n"
+        L"扩展:   " + g_status_ext + L"\r\n"
+        L"页面:   " + g_status_page + L"\r\n"
+        L"任务:   " + g_status_state + L"\r\n"
+        L"绑定:   " + g_status_target + L"\r\n\r\n"
+        L"关闭窗口只隐藏到托盘，服务继续运行。\r\n"
+        L"右键托盘图标可显示窗口 / 开始·暂停 / 退出程序。";
+    if (g_hText) GlobalFree(g_hText);
+    size_t bytes = (text.size() + 1) * sizeof(wchar_t);
+    g_hText = GlobalAlloc(GMEM_MOVEABLE, bytes);
+    if (g_hText) {
+        void* dst = GlobalLock(g_hText);
+        if (dst) {
+            memcpy(dst, text.c_str(), bytes);
+            GlobalUnlock(g_hText);
+        }
+    }
+    InvalidateRect(hwnd, 0, TRUE);
 }
 
 static void StartBridge() {
-    if (HttpOk(L"/api/status")) { Log(L"[Bridge] Already running"); return; }
+    if (BridgeOnline()) return;
     std::wstring python = g_root + L"\\runtime\\venv\\Scripts\\python.exe";
     if (GetFileAttributesW(python.c_str()) == INVALID_FILE_ATTRIBUTES) {
         python = L"python";
@@ -131,15 +170,12 @@ static void StartBridge() {
     if (CreateProcessW(0, &cmd[0], 0, 0, FALSE, CREATE_NO_WINDOW, 0, g_root.c_str(), &si, &pi)) {
         g_child = pi.hProcess;
         CloseHandle(pi.hThread);
-        Log(L"[Bridge] Started");
-    } else {
-        Log(L"[Bridge] Start failed");
     }
 }
 
 static void StopBridge(bool graceful) {
-    if (graceful) {
-        HttpRequest(L"POST", L"/api/shutdown");
+    if (graceful && !g_token.empty()) {
+        HttpPost(L"/api/shutdown");
         Sleep(1200);
     }
     if (g_child) {
@@ -149,113 +185,170 @@ static void StopBridge(bool graceful) {
         CloseHandle(g_child);
         g_child = 0;
     }
-    Log(L"[Bridge] Stopped");
 }
 
-static void TogglePause() {
+static void ToggleService() {
     if (g_paused) {
-        HttpRequest(L"POST", L"/api/resume");
+        HttpPost(L"/api/resume");
         g_paused = false;
-        Log(L"[Service] Resumed");
     } else {
-        HttpRequest(L"POST", L"/api/pause");
+        bool online = BridgeOnline();
+        if (!online) {
+            StartBridge();
+            Sleep(800);
+        }
+        HttpPost(L"/api/pause");
         g_paused = true;
-        Log(L"[Service] Paused");
     }
+    RefreshStatus();
+    UpdateMainText(g_main);
 }
 
-static void ShowConsole(bool show) {
-    if (!g_console) g_console = GetConsoleWindow();
+static void ShowMainWindow(bool show) {
+    if (!g_main) return;
     if (show) {
-        ShowWindow(g_console, SW_SHOW);
-        SetForegroundWindow(g_console);
+        ShowWindow(g_main, SW_SHOW);
+        ShowWindow(g_main, SW_RESTORE);
+        SetForegroundWindow(g_main);
     } else {
-        ShowWindow(g_console, SW_HIDE);
+        ShowWindow(g_main, SW_HIDE);
     }
+    RefreshStatus();
+    UpdateMainText(g_main);
 }
 
-static void UpdateTray() {
+static void UpdateTrayIcon() {
     NOTIFYICONDATAW nid;
     ZeroMemory(&nid, sizeof(nid));
     nid.cbSize = sizeof(nid);
     nid.hWnd = g_msgwin;
-    nid.uID = 1;
+    nid.uID = TRAY_ID;
     nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
-    nid.uCallbackMessage = WM_APP + 1;
+    nid.uCallbackMessage = WM_TRAY;
     nid.hIcon = g_icon;
-    wcscpy_s(nid.szTip, L"GPT Web MCP");
+    wcscpy_s(nid.szTip, L"GPT Web MCP Bridge");
     Shell_NotifyIconW(NIM_ADD, &nid);
     Shell_NotifyIconW(NIM_SETVERSION, &nid);
 }
 
-static void RemoveTray() {
+static void RemoveTrayIcon() {
     NOTIFYICONDATAW nid;
     ZeroMemory(&nid, sizeof(nid));
     nid.cbSize = sizeof(nid);
     nid.hWnd = g_msgwin;
-    nid.uID = 1;
+    nid.uID = TRAY_ID;
     Shell_NotifyIconW(NIM_DELETE, &nid);
-}
-
-static void ToggleConsoleVisible() {
-    ShowConsole(!(IsWindowVisible(g_console) != 0));
 }
 
 static void ShowTrayMenu() {
     HMENU menu = CreatePopupMenu();
-    AppendMenuW(menu, MF_STRING, 1, L"显示 / 隐藏控制台");
-    AppendMenuW(menu, MF_STRING, 2, g_paused ? L"启动（恢复）" : L"暂停");
+    bool main_visible = IsWindowVisible(g_main) != 0;
+    AppendMenuW(menu, MF_STRING | (main_visible ? MF_CHECKED : 0), IDM_SHOW,
+        main_visible ? L"显示窗口 ✓" : L"显示窗口");
+    AppendMenuW(menu, MF_STRING | (g_paused ? 0 : MF_CHECKED), IDM_TOGGLE,
+        g_paused ? L"开始服务" : L"暂停服务");
     AppendMenuW(menu, MF_SEPARATOR, 0, 0);
-    AppendMenuW(menu, MF_STRING, 3, L"关闭");
+    AppendMenuW(menu, MF_STRING, IDM_EXIT, L"退出程序");
     POINT pt;
     GetCursorPos(&pt);
     SetForegroundWindow(g_msgwin);
     UINT sel = TrackPopupMenu(menu, TPM_RIGHTBUTTON | TPM_RETURNCMD, pt.x, pt.y, 0, g_msgwin, 0);
     DestroyMenu(menu);
-    if (sel == 1) ToggleConsoleVisible();
-    else if (sel == 2) TogglePause();
-    else if (sel == 3) { g_shutdown = true; }
-}
-
-static BOOL WINAPI ConsoleHandler(DWORD ev) {
-    if (ev == CTRL_CLOSE_EVENT) {
-        ShowConsole(false);
-        return TRUE;  // keep running in tray
+    if (sel == IDM_SHOW) {
+        ShowMainWindow(!main_visible);
+    } else if (sel == IDM_TOGGLE) {
+        ToggleService();
+    } else if (sel == IDM_EXIT) {
+        g_force_exit = true;
+        PostMessageW(g_msgwin, WM_DESTROY, 0, 0);
     }
-    return FALSE;
 }
 
-static void PollStatus() {
-    std::wstring r = HttpRequest(L"GET", L"/api/status");
-    if (r.empty()) { Log(L"[Status] bridge offline"); return; }
-    bool ext = r.find(L"\"extension\":\"connected\"") != std::wstring::npos;
-    bool page = r.find(L"\"page\":\"ready\"") != std::wstring::npos;
-    bool streaming = r.find(L"\"response_state\":\"streaming\"") != std::wstring::npos;
-    if (ext && page) Log(L"[Status] Extension connected, page ready%s", streaming ? L", streaming" : L"");
-    else if (ext) Log(L"[Status] Extension connected, page not ready");
-    else Log(L"[Status] Extension not connected");
+static LRESULT CALLBACK MsgProc(HWND hwnd, UINT msg, WPARAM w, LPARAM l) {
+    if (msg == WM_TRAY) {
+        if (l == WM_LBUTTONUP || l == WM_LBUTTONDBLCLK) {
+            ShowMainWindow(!(IsWindowVisible(g_main) != 0));
+        } else if (l == WM_RBUTTONUP) {
+            ShowTrayMenu();
+        }
+        return 0;
+    }
+    if (msg == WM_DESTROY) {
+        // Always stop the child bridge on any destroy path (tray exit, system
+        // shutdown, task-manager close) so the user keeps full control.
+        StopBridge(true);
+        PostQuitMessage(0);
+        return 0;
+    }
+    return DefWindowProcW(hwnd, msg, w, l);
 }
 
-int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int) {
+static LRESULT CALLBACK MainProc(HWND hwnd, UINT msg, WPARAM w, LPARAM l) {
+    switch (msg) {
+        case WM_PAINT: {
+            PAINTSTRUCT ps;
+            HDC dc = BeginPaint(hwnd, &ps);
+            HBRUSH bg = CreateSolidBrush(RGB(245, 246, 250));
+            FillRect(dc, &ps.rcPaint, bg);
+            DeleteObject(bg);
+            SetBkMode(dc, TRANSPARENT);
+            HFONT font = CreateFontW(-16, 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET,
+                0, 0, CLEARTYPE_QUALITY, 0, L"Microsoft YaHei UI");
+            HFONT title = CreateFontW(-22, 0, 0, 0, FW_SEMIBOLD, 0, 0, 0, DEFAULT_CHARSET,
+                0, 0, CLEARTYPE_QUALITY, 0, L"Microsoft YaHei UI");
+            RECT rc;
+            GetClientRect(hwnd, &rc);
+            const wchar_t* head = L"GPT Web MCP Bridge";
+            HFONT old = (HFONT)SelectObject(dc, title);
+            SetTextColor(dc, RGB(30, 60, 110));
+            DrawTextW(dc, head, -1, &rc, DT_LEFT | DT_TOP | DT_NOPREFIX);
+            rc.top += 34;
+            SelectObject(dc, font);
+            SetTextColor(dc, RGB(40, 45, 55));
+            if (g_hText) {
+                void* p = GlobalLock(g_hText);
+                if (p) {
+                    DrawTextW(dc, (const wchar_t*)p, -1, &rc, DT_LEFT | DT_TOP | DT_NOPREFIX | DT_WORDBREAK);
+                    GlobalUnlock(g_hText);
+                }
+            }
+            SelectObject(dc, old);
+            DeleteObject(font);
+            DeleteObject(title);
+            EndPaint(hwnd, &ps);
+            return 0;
+        }
+        case WM_CLOSE:
+            ShowMainWindow(false);
+            return 0;
+    }
+    return DefWindowProcW(hwnd, msg, w, l);
+}
+
+int APIENTRY wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int) {
     g_root = ExeDir();
     size_t slash = g_root.rfind(L'\\');
-    if (slash != std::wstring::npos) g_root = g_root.substr(0, slash);  // build\ -> project root
+    if (slash != std::wstring::npos) g_root = g_root.substr(0, slash);
     g_token = ReadConfigToken();
 
     g_mutex = CreateMutexW(0, TRUE, L"GPT-Web-MCP-SingleInstance");
     if (g_mutex && GetLastError() == ERROR_ALREADY_EXISTS) {
-        HWND other = FindWindowW(L"ConsoleWindowClass", 0);
+        HWND other = FindWindowW(MAIN_CLASS, 0);
         if (other) { ShowWindow(other, SW_SHOW); SetForegroundWindow(other); }
         return 0;
     }
 
-    g_console = GetConsoleWindow();
-    SetConsoleTitleW(L"GPT Web MCP");
     std::wstring ico = g_root + L"\\res\\GPT_Web_MCP_iconic.ico";
     g_icon = (HICON)LoadImageW(0, ico.c_str(), IMAGE_ICON, 32, 32, LR_LOADFROMFILE);
     if (!g_icon) g_icon = LoadIconW(0, IDI_APPLICATION);
-    SendMessageW(g_console, WM_SETICON, ICON_BIG, (LPARAM)g_icon);
-    SendMessageW(g_console, WM_SETICON, ICON_SMALL, (LPARAM)g_icon);
+
+    WNDCLASSW wm;
+    ZeroMemory(&wm, sizeof(wm));
+    wm.lpfnWndProc = MainProc;
+    wm.hInstance = hInst;
+    wm.hIcon = g_icon;
+    wm.lpszClassName = MAIN_CLASS;
+    RegisterClassW(&wm);
 
     WNDCLASSW wc;
     ZeroMemory(&wc, sizeof(wc));
@@ -263,29 +356,31 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int) {
     wc.hInstance = hInst;
     wc.lpszClassName = MSG_CLASS;
     RegisterClassW(&wc);
-    g_msgwin = CreateWindowExW(0, MSG_CLASS, L"GPT Web MCP", 0, 0, 0, 0, 0,
+
+    g_main = CreateWindowExW(0, MAIN_CLASS, L"GPT Web MCP Bridge",
+        WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
+        CW_USEDEFAULT, CW_USEDEFAULT, 520, 340, 0, 0, hInst, 0);
+    g_msgwin = CreateWindowExW(0, MSG_CLASS, L"tray", 0, 0, 0, 0, 0,
         HWND_MESSAGE, 0, hInst, 0);
 
-    SetConsoleCtrlHandler(ConsoleHandler, TRUE);
-    UpdateTray();
-    Log(L"[MCP] On-demand via Codex (stdio); Bridge auto-starting");
+    UpdateTrayIcon();
+    ShowMainWindow(true);
     StartBridge();
 
-    SetTimer(g_console, 1, 5000, 0);
+    SetTimer(g_msgwin, 2, 2000, 0);
     MSG msg;
     while (GetMessageW(&msg, 0, 0, 0)) {
-        if (msg.message == WM_TIMER && msg.wParam == 1 && !g_shutdown) PollStatus();
+        if (msg.message == WM_TIMER && msg.wParam == 2) {
+            RefreshStatus();
+            UpdateMainText(g_main);
+        }
         TranslateMessage(&msg);
         DispatchMessageW(&msg);
-        if (g_shutdown) {
-            StopBridge(true);
-            RemoveTray();
-            PostQuitMessage(0);
-        }
     }
 
-    RemoveTray();
+    RemoveTrayIcon();
     if (g_icon) DestroyIcon(g_icon);
+    if (g_hText) GlobalFree(g_hText);
     if (g_mutex) CloseHandle(g_mutex);
     return 0;
 }

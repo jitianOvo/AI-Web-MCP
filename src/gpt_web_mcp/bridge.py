@@ -77,6 +77,7 @@ class BridgeService:
         self.open_waiters: dict[str, asyncio.Future] = {}
         self.new_chat_waiters: dict[str, asyncio.Future] = {}
         self.state_waiters: dict[str, asyncio.Future] = {}
+        self.image_waiters: dict[str, asyncio.Future] = {}
         self.paused = False
         self.last_request_id = ""
         self.last_success_time = 0.0
@@ -404,6 +405,106 @@ class BridgeService:
             return self.error("UNAUTHORIZED", "Bridge token 不正确", 401)
         self.shutdown_event.set()
         return web.json_response({"success": True, "shutting_down": True})
+
+    async def handle_send_image(self, request: web.Request) -> web.Response:
+        """Ask the web ChatGPT to understand an image via the clipboard-paste path."""
+        if not self.authorized(request):
+            return self.error("UNAUTHORIZED", "Bridge token 不正确", 401)
+        try:
+            payload = await request.json()
+        except Exception:
+            return self.error("INVALID_JSON", "请求体必须是 JSON")
+        image_path = str(payload.get("image_path", "")).strip()
+        skip_paste = bool(payload.get("skip_paste"))
+        image_file = None
+        if image_path:
+            candidate = resolve_project_path(image_path)
+            if not candidate.exists() or not candidate.is_file():
+                return self.error("IMAGE_NOT_FOUND", f"图片不存在：{candidate}", 404)
+            image_file = candidate
+        elif not skip_paste:
+            return self.error("INVALID_IMAGE", "image_path 不能为空")
+        requested_target = str(payload.get("target_id", ""))
+        connection = self.targets.choose(requested_target)
+        if not connection or connection.websocket.closed:
+            return self.error("EXTENSION_NOT_CONNECTED", "浏览器扩展尚未连接", 503)
+        # System-level Ctrl+V (no CDP, works even when the window is background).
+        # Let the extension bring the target window to the foreground and focus
+        # the composer, then OS-level Ctrl+V pastes into the focused composer.
+        if not skip_paste:
+            try:
+                await asyncio.to_thread(self._set_clipboard_image, image_file)
+            except BridgeFailure as error:
+                return self.error(error.code, error.message, 500)
+        if not skip_paste:
+            try:
+                await connection.websocket.send_json(make_message(
+                    "focus", request_id=new_request_id("imgfocus"), target_id=connection.target_id,
+                ))
+            except Exception:
+                pass
+            await asyncio.sleep(1.0)
+            try:
+                await asyncio.to_thread(self._paste_clipboard)
+            except BridgeFailure as error:
+                return self.error(error.code, error.message, 500)
+        request_id = str(payload.get("request_id") or new_request_id("img"))
+        waiter = asyncio.get_running_loop().create_future()
+        self.image_waiters[request_id] = waiter
+        timeout_ms = int(payload.get("timeout_ms", 600000))
+        try:
+            await connection.websocket.send_json(make_message(
+                "send_image", request_id=request_id, target_id=connection.target_id,
+                conversation_id=str(payload.get("conversation_id") or "current"),
+                prompt=str(payload.get("prompt") or "请描述这张图片"),
+                expected_format=str(payload.get("expected_format") or "text"),
+                timeout_ms=timeout_ms,
+                pasted=True,
+            ))
+            result = await asyncio.wait_for(waiter, timeout=timeout_ms / 1000 + 20)
+            return web.json_response({"success": True, "request_id": request_id, **result})
+        except asyncio.TimeoutError:
+            return self.error("IMAGE_TIMEOUT", "图片询问超时", 503, request_id)
+        except BridgeFailure as error:
+            return self.error(error.code, error.message, 499, request_id)
+        finally:
+            self.image_waiters.pop(request_id, None)
+
+    @staticmethod
+    def _set_clipboard_image(image_file: Path) -> None:
+        """Put the image onto the system clipboard via PowerShell (STA)."""
+        image_file = image_file.resolve()
+        script = (
+            "Add-Type -AssemblyName System.Windows.Forms; "
+            "Add-Type -AssemblyName System.Drawing; "
+            f"$img=[System.Drawing.Image]::FromFile(\"{str(image_file).replace(chr(92), chr(92) + chr(92))}\"); "
+            "$bmp=New-Object System.Drawing.Bitmap $img; "
+            "[System.Windows.Forms.Clipboard]::SetImage($bmp); "
+            "$img.Dispose(); $bmp.Dispose(); "
+            "'clipboard-ok'"
+        )
+        completed = subprocess.run(
+            ["powershell", "-NoProfile", "-STA", "-Command", script],
+            capture_output=True, text=True, timeout=30,
+        )
+        if completed.returncode != 0 or "clipboard-ok" not in completed.stdout:
+            detail = (completed.stderr or "").strip()[:300] or "PowerShell 设置剪贴板失败"
+            raise BridgeFailure("CLIPBOARD_FAILED", detail)
+
+    @staticmethod
+    def _paste_clipboard() -> None:
+        """System-level Ctrl+V via the native helper (paste-only, no Enter)."""
+        helper = resolve_project_path(
+            str(load_config().get("sendinput_helper", "build/gpt_sendinput.exe"))
+        )
+        if not helper.exists():
+            raise BridgeFailure("SENDINPUT_MISSING", f"系统级粘贴助手不存在：{helper}")
+        completed = subprocess.run(
+            [str(helper), "--paste"], timeout=25,
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        if completed.returncode != 0:
+            raise BridgeFailure("SENDINPUT_PASTE_FAILED", f"系统级粘贴失败 rc={completed.returncode}")
 
     async def handle_send(self, request: web.Request) -> web.Response:
         if not self.authorized(request):
@@ -854,6 +955,21 @@ class BridgeService:
                 waiter = waiters.get(request_id)
                 if waiter and not waiter.done():
                     waiter.set_exception(BridgeFailure(str(data.get("code", "EXTENSION_ERROR")), str(data.get("message", "扩展执行失败"))))
+        if request_id in self.image_waiters:
+            waiter = self.image_waiters[request_id]
+            if waiter and not waiter.done():
+                if kind == "result":
+                    result = str(data.get("result", ""))
+                    if result.strip():
+                        conversation_id = str(data.get("conversation_id") or "current")
+                        self.store.upsert_conversation(conversation_id, connection.target_id if connection else "")
+                        self.store.append_message(conversation_id, str(data.get("message_id", uuid.uuid4().hex)), "assistant", result, text_hash("assistant", result))
+                        waiter.set_result({"result": result, "conversation_id": conversation_id})
+                    else:
+                        waiter.set_exception(BridgeFailure("EMPTY_RESPONSE", "ChatGPT 返回空内容"))
+                elif kind == "error":
+                    waiter.set_exception(BridgeFailure(str(data.get("code", "EXTENSION_ERROR")), str(data.get("message", "扩展执行失败"))))
+            return
         job = self.jobs.get(request_id)
         if not job or job.future.done():
             return
@@ -1067,6 +1183,7 @@ def create_app(config: dict[str, Any] | None = None) -> web.Application:
     app.router.add_get("/api/personas", service.handle_personas)
     app.router.add_post("/api/personas", service.handle_personas)
     app.router.add_post("/api/chat/send", service.handle_send)
+    app.router.add_post("/api/chat/send-image", service.handle_send_image)
     app.router.add_post("/api/chat/new", service.handle_new_chat)
     app.router.add_post("/api/chat/sync-state", service.handle_sync_state)
     app.router.add_post("/api/pause", service.handle_pause)
