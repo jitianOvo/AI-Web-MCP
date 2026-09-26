@@ -1,0 +1,8 @@
+body { width: 260px; margin: 14px; font: 13px system-ui, sans-serif; color: #202124; }
+h1 { font-size: 16px; margin: 0 0 12px; }
+.row { display: flex; justify-content: space-between; margin: 6px 0; }
+strong.ok { color: #188038; }
+strong.bad { color: #c5221f; }
+strong.warn { color: #b06000; }
+#detail { min-height: 20px; color: #666; word-break: break-word; }
+button { width: 100%; margin-top: 8px; padding: 7px; cursor: pointer; }

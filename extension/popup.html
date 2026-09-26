@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>GPT Web MCP</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <h1>GPT Web MCP</h1>
+  <div class="row"><span>Bridge</span><strong id="bridge">检查中</strong></div>
+  <div class="row"><span>标签页</span><strong id="tab">检查中</strong></div>
+  <div class="row"><span>页面</span><strong id="page">检查中</strong></div>
+  <div class="row"><span>目标数</span><strong id="targets">0</strong></div>
+  <div class="row"><span>任务</span><strong id="busy">空闲</strong></div>
+  <p id="detail"></p>
+  <button id="bind">绑定当前 ChatGPT 标签页</button>
+  <button id="reconnect">重新连接 Bridge</button>
+  <script src="popup.js"></script>
+</body>
+</html>

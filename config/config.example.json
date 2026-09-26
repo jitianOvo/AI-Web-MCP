@@ -1,0 +1,15 @@
+{
+  "host": "127.0.0.1",
+  "port": 8765,
+  "bridge_token": "GENERATED_ON_FIRST_START",
+  "response_timeout": 600,
+  "timeout_grace_ms": 5000,
+  "max_queue_size": 20,
+  "max_active_jobs": 8,
+  "rate_limit_per_minute": 0,
+  "rate_limit_window_sec": 60,
+  "max_text_chars": 200000,
+  "log_retention_days": 14,
+  "database_path": "data/gpt_web_mcp.sqlite3",
+  "debug": false
+}

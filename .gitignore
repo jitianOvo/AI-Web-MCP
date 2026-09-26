@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.venv/
+config/config.json
+extension/config.js
+data/*
+logs/*
+temp/*
+
+runtime/
+build/
+tmp/
+__pycache__/
+*.pyc
+.pytest_cache/

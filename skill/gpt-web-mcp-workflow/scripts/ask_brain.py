@@ -1,0 +1,65 @@
+#!/usr/bin/env python3
+"""问大脑 CLI：把一段提示词发给网页端 ChatGPT 并打印完整回答。
+
+用法:
+  python ask_brain.py "提示词" [--timeout-ms 180000] [--target tab-xxx] [--last]
+
+通过本地 GPT Web MCP Bridge 调用；需要 Bridge 在线、扩展已绑定标签页。
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+from pathlib import Path
+
+PROJECT_ROOT = Path(os.environ.get(
+    "GPT_WEB_MCP_ROOT",
+    r"D:\桌面\Work\GPT Web MCP",
+)).resolve()
+sys.path.insert(0, str(PROJECT_ROOT / "src"))
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Send a prompt to web ChatGPT via the bridge.")
+    parser.add_argument("prompt", nargs="?", default="", help="提示词正文（--last 模式可省略）")
+    parser.add_argument("--timeout-ms", type=int, default=180000, help="等待回答超时，默认 180000")
+    parser.add_argument("--target", default="", help="target_id，默认自动选择绑定标签页")
+    parser.add_argument("--last", action="store_true", help="只读取指定会话/最近回答，不发新消息")
+    parser.add_argument("--conversation", default="current", help="会话 id")
+    args = parser.parse_args()
+
+    if not args.last and not args.prompt.strip():
+        parser.error("prompt 不能为空（或使用 --last 只读最近回答）")
+
+    from gpt_web_mcp.client import BridgeClient, BridgeError  # noqa: E402
+
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    client = BridgeClient(timeout=args.timeout_ms / 1000 + 20)
+    try:
+        client.ensure_running(wait_seconds=15)
+        if args.last:
+            result = client.latest_message(args.conversation)
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+        else:
+            result = client.send(
+                args.prompt, args.conversation, "text",
+                args.timeout_ms, args.target,
+            )
+            print(json.dumps({
+                "conversation_id": result.get("conversation_id"),
+                "result": result.get("result"),
+            }, ensure_ascii=False, indent=2, default=str))
+        return 0
+    except BridgeError as error:
+        print(json.dumps({"code": error.code, "message": error.message}, ensure_ascii=False, indent=2))
+        return 1
+    except Exception as error:  # pragma: no cover
+        print(json.dumps({"code": "UNEXPECTED", "message": str(error)}, ensure_ascii=False, indent=2))
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
