@@ -15,7 +15,7 @@ description: 通过本地 GPT Web MCP 桥把网页端 ChatGPT 当作“规划大
 
 1. 本地 Bridge 在线：`python scripts/health_report.py` 或直接请求 `GET http://127.0.0.1:8765/api/status`（带 `X-Bridge-Token`，token 在 `config/config.json`）。
 2. 扩展已加载且 ChatGPT 标签页已绑定：`browser_status` 应返回 `extension=connected`、`page=ready`、`tab_bound=true`。
-3. 若 Bridge 不在线：运行 `scripts/start_bridge.ps1`（或托盘程序 `scripts/start_bridge_tray.cmd`）。
+3. 若 Bridge 不在线：自动启动桥，路径写死（本机约定）`D:\桌面\Work\GPT Web MCP\build\GPT Web MCP.exe`。可用 `Start-Process` 启动，或运行 `scripts/start_bridge.ps1` / `scripts/start_bridge_tray.cmd`；启动后轮询 `/api/status` 直到 `bridge=online`。
 4. 若未绑定标签页：只有一个 ChatGPT 标签页时会自动绑定；多标签页用 `list_chatgpt_tabs` + `bind_chatgpt_tab` 指定。
 
 ## 角色分工
@@ -69,6 +69,7 @@ description: 通过本地 GPT Web MCP 桥把网页端 ChatGPT 当作“规划大
 - **composer 定位**：长答案后页面可能出现第二个 ProseMirror（aria="开始写作"），扩展按“aria=询问/Ask ChatGPT → composer form 内 → 排除开始写作”定位真实输入框，不会写错位置。
 - **新开页面/会话**：`open_chatgpt_tab` 可让扩展自主开 ChatGPT 新标签/新窗口（无窗口安装自动 `windows.create`）；`new_chat` 开新会话。
 - **多窗口/多标签**：每个绑定标签是独立 target（`tab-<id>`），扩展自动绑定唯一 ChatGPT 标签；多标签用 `list_chatgpt_tabs` + `bind_chatgpt_tab` 显式指定。任务严格按 target 串行，不会串线。
+- **多网页并发规范**（0.1.29+）：每个对话/任务必须显式 `target_id`（先 `list_chatgpt_tabs` 确认自己在用哪个网页），并发时传 `input_backend="dom"` 走页面 DOM 链路，避免两个 CDP 任务互抢窗口前台；发送后由页面 `waitForUserMessage` 严格匹配本任务提示词，历史消息不会被误判为已上屏。同一 ChatGPT 账号高频多会话并发时网页端可能静默丢弃部分请求（消息上屏但无回答），应控制节奏并在超时后用 `chat_read` / `get_latest_message` 回捞或换会话重试。
 - **扩展热重载**（0.1.29+）：Bridge `/api/reload-extension` 会向所有在线扩展连接广播重载指令，扩展立即 `chrome.runtime.reload()`。若扩展 `extension_version` 未变（服务进程被语法错误拒载），需手动在 `chrome://extensions` 点一次刷新图标，然后刷新网页重新绑定。
 - **自主纠正**：发送后不确认上屏会报错而不是假装成功；`sync_chat_state` 可恢复场景、`chat_cancel` 终止卡住的任务；Bridge 重启后任务持久化可查 `chat_task_status`。
 

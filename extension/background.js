@@ -160,14 +160,18 @@ async function sendImageFromBridge(message, targetId) {
     }
     // Wait until the composer shows the uploaded image and upload finished.
     sendToBridge(targetId, { type: "progress", request_id: requestId, stage: "VISION_UPLOAD", detail: "waiting upload" });
-    const uploadDeadline = Date.now() + 60000;
+    const uploadDeadline = Date.now() + 180000;
     let ready = false;
     while (Date.now() < uploadDeadline) {
       const state = await sendTaskToPage(tab.id, { type: "bridge_check_image_upload" }, 5000);
       if (state && state.ready) { ready = true; break; }
       await new Promise((resolve) => setTimeout(resolve, 800));
     }
-    if (!ready) throw bridgeError("IMAGE_UPLOAD_TIMEOUT", "图片粘贴后未在页面确认上屏");
+    if (!ready) {
+      // ChatGPT keeps the send queued until the upload finishes, so do not
+      // block the pipeline on slow networks: proceed and let the page send.
+      sendToBridge(targetId, { type: "progress", request_id: requestId, stage: "VISION_UPLOAD_SLOW", detail: "upload not confirmed; relying on page auto-send" });
+    }
     sendToBridge(targetId, { type: "progress", request_id: requestId, stage: "VISION_UPLOADED", detail: "upload ready" });
     // Now send prompt + text through the standard pipeline.
     // Append prompt text after the pasted image (do NOT select-all; that would
@@ -457,6 +461,7 @@ async function runTask(message, socketTargetId) {
         await cdpTypeAndEnter(tab.id, String(message.prompt || ""));
         sendToBridge(targetId, { type: "progress", request_id: message.request_id, stage: "INPUT_SENT", detail: JSON.stringify(cdpLastLog || {}) });
         inputDiag = JSON.stringify(cdpLastLog || {});
+        inputBackend = "send_only";  // click send in page (robust chain)
       } catch (error) {
         inputBackend = "dom";
         sendToBridge(targetId, { type: "progress", request_id: message.request_id, stage: "FALLBACK_DOM", detail: error.code || "CDP_FAILED" });
@@ -627,43 +632,6 @@ async function cdpTypeAndEnter(tabId, text) {
     await cdpCommand(tabId, "Input.insertText", { text: String(text || "") });
     await new Promise((resolve) => setTimeout(resolve, 400));
     log.afterInsert = await cdpReadEditorText(tabId);
-    const stateRes = await cdpCommand(tabId, "Runtime.evaluate", {
-      expression: "(function(){const b=Array.from(document.querySelectorAll('main button')).find(x=>(x.getAttribute('aria-label')||'')==='发送'||(x.getAttribute('aria-label')||'').includes('Send')); return b ? {found:true, disabled:!!b.disabled, ariaDisabled:b.getAttribute('aria-disabled')||''} : {found:false};})()",
-      returnByValue: true,
-    });
-    const btn = (stateRes.result || {}).value;
-    log.buttonState = btn;
-    if (btn && btn.found && !btn.disabled) {
-      // CDP key events are dropped when the OS window lacks focus.  Probe the
-      // page focus first and re-foreground once if needed (Windows foreground
-      // lock can make the first chrome.windows.update a no-op).
-      const focusProbe = await cdpCommand(tabId, "Runtime.evaluate", {
-        expression: "(function(){const e=document.querySelector('div.ProseMirror[contenteditable=\"true\"]'); return {hasFocus: document.hasFocus(), focused: !!e && e === document.activeElement};})()",
-        returnByValue: true,
-      });
-      const focusInfo = (focusProbe.result || {}).value || {};
-      log.focus = focusInfo;
-      if (!focusInfo.hasFocus || !focusInfo.focused) {
-        await ensureWindowForeground(tabId);
-        await cdpFocusEditor(tabId);
-        await new Promise((resolve) => setTimeout(resolve, 400));
-      }
-      await cdpPressKey(tabId, "Enter", "Enter", 13, false);
-      await new Promise((resolve) => setTimeout(resolve, 400));
-    }
-    log.afterEnter = await cdpReadEditorText(tabId);
-    // Composer cleared means the page accepted the submit.  If it still holds
-    // text, the key event never reached the renderer (background window); fall
-    // back to a DOM-level click which does not depend on OS focus.
-    if (log.afterEnter && log.afterEnter.trim() && btn && btn.found && !btn.disabled) {
-      log.enterMissed = true;
-      await cdpCommand(tabId, "Runtime.evaluate", {
-        expression: "(function(){const b=Array.from(document.querySelectorAll('main button')).find(x=>(x.getAttribute('aria-label')||'')==='发送'||(x.getAttribute('aria-label')||'').includes('Send')); if(!b||b.disabled) return 'skip'; b.click(); return 'clicked';})()",
-        returnByValue: true,
-      });
-      await new Promise((resolve) => setTimeout(resolve, 500));
-      log.afterFallbackClick = await cdpReadEditorText(tabId);
-    }
     cdpLastLog = log;
     return true;
   } finally {

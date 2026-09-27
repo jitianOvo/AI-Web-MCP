@@ -42,6 +42,7 @@ class Job:
     task_group_id: str = ""
     cancelled: bool = False
     source_content: str = ""
+    input_backend: str = ""
 
 
 def configure_logging(debug: bool) -> logging.Logger:
@@ -540,7 +541,7 @@ class BridgeService:
         job = Job(
             request_id, target_id, conversation_id, content,
             str(payload.get("expected_format", "text")), int(payload.get("timeout_ms", 600000)),
-            loop.create_future(), persona_id, task_group_id, False, source_content,
+            loop.create_future(), persona_id, task_group_id, False, source_content, str(payload.get("input_backend", "")),
         )
         self.jobs[request_id] = job
         self.store.create_task(request_id, conversation_id, content, target_id=target_id, persona_id=persona_id, task_group_id=task_group_id)
@@ -1098,7 +1099,7 @@ class BridgeService:
             if not target:
                 raise BridgeFailure("EXTENSION_NOT_CONNECTED", "浏览器扩展尚未连接")
             await self.wait_for_rate_limit()
-            input_backend = str(self.config.get("input_backend", "cdp"))
+            input_backend = str(job.input_backend or self.config.get("input_backend", "cdp"))
             if input_backend == "sendinput":
                 try:
                     await target.websocket.send_json(make_message("focus", target_id=job.target_id))

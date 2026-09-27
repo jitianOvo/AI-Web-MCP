@@ -131,7 +131,7 @@ static void RefreshStatus() {
 
 static void UpdateMainText(HWND hwnd) {
     std::wstring text =
-        L"GPT Web MCP Bridge    版本 0.1.27\r\n\r\n"
+        L"版本 0.1.29\r\n\r\n"
         L"桥服务: " + g_status_bridge + L"\r\n"
         L"扩展:   " + g_status_ext + L"\r\n"
         L"页面:   " + g_status_page + L"\r\n"
@@ -299,6 +299,8 @@ static LRESULT CALLBACK MainProc(HWND hwnd, UINT msg, WPARAM w, LPARAM l) {
             RECT rc;
             GetClientRect(hwnd, &rc);
             const wchar_t* head = L"GPT Web MCP Bridge";
+            rc.left += 16;
+            rc.top += 6;
             HFONT old = (HFONT)SelectObject(dc, title);
             SetTextColor(dc, RGB(30, 60, 110));
             DrawTextW(dc, head, -1, &rc, DT_LEFT | DT_TOP | DT_NOPREFIX);

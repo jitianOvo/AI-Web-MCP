@@ -149,14 +149,15 @@ async function startNewChat() {
 async function waitForUserMessage(prompt, timeoutMs = 10000) {
   const norm = (value) => String(value || "").replace(/\s+/g, " ").trim();
   const needle = norm(String(prompt || "").slice(0, 600));
+  const loose = !needle;  // no prompt -> any user message counts
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const userNodes = messageNodes().filter((node) => roleFromNode(node) === "user");
     for (const node of userNodes) {
       const text = cleanText(node);
-      if (text && (!needle || norm(text).includes(needle))) return true;
+      if (text && norm(text).includes(needle)) return true;
     }
-    if (userNodes.some((node) => cleanText(node))) return true;
+    if (loose && userNodes.some((node) => cleanText(node))) return true;
     await delay(200);
   }
   return false;

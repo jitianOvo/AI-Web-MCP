@@ -150,7 +150,7 @@ class BridgeClient:
             "config_json": config_json,
         })
 
-    def send(self, content: str, conversation_id: str = "", expected_format: str = "text", timeout_ms: int = 600000, target_id: str = "", persona_id: str = "", task_group_id: str = "") -> dict[str, Any]:
+    def send(self, content: str, conversation_id: str = "", expected_format: str = "text", timeout_ms: int = 600000, target_id: str = "", persona_id: str = "", task_group_id: str = "", input_backend: str = "") -> dict[str, Any]:
         return self._request("POST", "/api/chat/send", {
             "content": content,
             "conversation_id": conversation_id,
@@ -159,6 +159,7 @@ class BridgeClient:
             "target_id": target_id,
             "persona_id": persona_id,
             "task_group_id": task_group_id,
+            "input_backend": input_backend,
         }, timeout=timeout_ms / 1000 + 20)
 
     def send_image(self, image_path: str, prompt: str = "请描述这张图片", conversation_id: str = "", expected_format: str = "text", timeout_ms: int = 600000, target_id: str = "") -> dict[str, Any]:
