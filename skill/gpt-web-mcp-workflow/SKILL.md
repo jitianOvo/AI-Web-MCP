@@ -69,6 +69,7 @@ description: 通过本地 GPT Web MCP 桥把网页端 ChatGPT 当作“规划大
 - **composer 定位**：长答案后页面可能出现第二个 ProseMirror（aria="开始写作"），扩展按“aria=询问/Ask ChatGPT → composer form 内 → 排除开始写作”定位真实输入框，不会写错位置。
 - **新开页面/会话**：`open_chatgpt_tab` 可让扩展自主开 ChatGPT 新标签/新窗口（无窗口安装自动 `windows.create`）；`new_chat` 开新会话。
 - **多窗口/多标签**：每个绑定标签是独立 target（`tab-<id>`），扩展自动绑定唯一 ChatGPT 标签；多标签用 `list_chatgpt_tabs` + `bind_chatgpt_tab` 显式指定。任务严格按 target 串行，不会串线。
+- **扩展热重载**（0.1.29+）：Bridge `/api/reload-extension` 会向所有在线扩展连接广播重载指令，扩展立即 `chrome.runtime.reload()`。若扩展 `extension_version` 未变（服务进程被语法错误拒载），需手动在 `chrome://extensions` 点一次刷新图标，然后刷新网页重新绑定。
 - **自主纠正**：发送后不确认上屏会报错而不是假装成功；`sync_chat_state` 可恢复场景、`chat_cancel` 终止卡住的任务；Bridge 重启后任务持久化可查 `chat_task_status`。
 
 ## 交付要求

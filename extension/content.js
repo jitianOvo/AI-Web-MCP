@@ -357,6 +357,21 @@ async function executeTask(message) {
       await flushBufferedMessages();
       return { success: true, result, conversation_id: conversationId(), message_id: lastMessage?.message_id || `assistant-${Date.now()}` };
     }
+    if (String(message.input_backend) === "send_only") {
+      progress(requestId, "INPUT_SENT");
+      const baselineCount = answerNodes().length;
+      await clickSend();
+      progress(requestId, "SEND_CLICKED");
+      const acked = await waitForUserMessage(String(message.prompt || ""), 15000);
+      if (!acked) throw bridgeError("SEND_FAILED", "用户消息未在页面确认上屏; send_only=true");
+      progress(requestId, "USER_MESSAGE_CONFIRMED");
+      const result = await waitForAnswer(requestId, baselineCount, Number(message.timeout_ms || 600000));
+      const assistantNodes = answerNodes();
+      const lastMessage = assistantNodes.length ? messageFromNode(assistantNodes[assistantNodes.length - 1]) : null;
+      progress(requestId, "COMPLETED");
+      await flushBufferedMessages();
+      return { success: true, result, conversation_id: conversationId(), message_id: lastMessage?.message_id || `assistant-${Date.now()}` };
+    }
     const baselineCount = answerNodes().length;
     const written = await setPromptVerified(input, String(message.prompt || ""));
     if (!written) throw bridgeError("INPUT_WRITE_FAILED", "内容未能写入输入框");

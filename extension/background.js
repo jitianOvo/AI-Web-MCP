@@ -178,21 +178,6 @@ async function sendImageFromBridge(message, targetId) {
       await cdpFocusComposerEnd(tab.id);  // caret to end, keep the pasted image
       await cdpCommand(tab.id, "Input.insertText", { text: prompt });
       await new Promise((resolve) => setTimeout(resolve, 400));
-      const btnRes = await cdpCommand(tab.id, "Runtime.evaluate", {
-        expression: "(function(){const b=Array.from(document.querySelectorAll('main button')).find(x=>(x.getAttribute('aria-label')||'')==='发送'||(x.getAttribute('aria-label')||'').includes('Send')); return b ? {found:true, disabled:!!b.disabled} : {found:false};})()",
-        returnByValue: true,
-      });
-      const btn = (btnRes.result || {}).value || {};
-      if (!btn.found) throw bridgeError("SEND_BUTTON_NOT_FOUND", "未找到发送按钮");
-      if (!btn.disabled) {
-        await cdpPressKey(tab.id, "Enter", "Enter", 13, false);
-        await new Promise((resolve) => setTimeout(resolve, 300));
-      } else {
-        await cdpCommand(tab.id, "Runtime.evaluate", {
-          expression: "(function(){const b=Array.from(document.querySelectorAll('main button')).find(x=>(x.getAttribute('aria-label')||'')==='发送'||(x.getAttribute('aria-label')||'').includes('Send')); if(b&&!b.disabled){b.click(); return 'clicked';} return 'skip';})()",
-          returnByValue: true,
-        });
-      }
     } finally {
       await debuggerDetach(tab.id);
     }
@@ -204,7 +189,7 @@ async function sendImageFromBridge(message, targetId) {
       prompt,
       expected_format: String(message.expected_format || "text"),
       timeout_ms: Number(message.timeout_ms || 600000),
-      input_backend: "verify",  // text already inserted; only wait+read
+      input_backend: "send_only",  // text+image already in composer; only click send + read
     });
     if (!response?.success) throw bridgeError(response?.code || "VISION_SEND_FAILED", response?.message || "图片消息发送失败");
     sendToBridge(targetId, { type: "result", request_id: requestId, target_id: targetId, result: response.result, conversation_id: response.conversation_id, message_id: response.message_id });
@@ -234,7 +219,7 @@ async function reloadExtensionFromBridge(message, socketTargetId) {
   sendToBridge(replyTarget, { type: "reload_result", request_id: String(message.request_id || ""), success: true });
   const tabId = Number(message.tab_id || 0);
   if (tabId) { try { await chrome.tabs.reload(tabId); } catch (_) {} }
-  setTimeout(() => { try { chrome.runtime.reload(); } catch (_) {} }, 350);
+  try { chrome.runtime.reload(); } catch (_) {}
 }
 
 async function openTabFromBridge(message, socketTargetId) {

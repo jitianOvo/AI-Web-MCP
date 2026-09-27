@@ -294,12 +294,13 @@ class BridgeService:
         if not self.authorized(request):
             return self.error("UNAUTHORIZED", "Bridge token 不正确", 401)
         payload = await request.json() if request.can_read_body else {}
-        connection = self.targets.choose_control()
-        if not connection or connection.websocket.closed:
-            return self.error("EXTENSION_NOT_CONNECTED", "浏览器扩展尚未连接", 503)
         target = self.targets.choose()
         tab_id = int(payload.get("tab_id") or (target.state.get("tab_id") if target else 0) or 0)
-        await connection.websocket.send_json(make_message("reload_extension", request_id=new_request_id("reload"), tab_id=tab_id))
+        live = [c for c in self.targets.connections.values() if not c.websocket.closed]
+        if not live:
+            return self.error("EXTENSION_NOT_CONNECTED", "浏览器扩展尚未连接", 503)
+        for connection in live:
+            await connection.websocket.send_json(make_message("reload_extension", request_id=new_request_id("reload"), tab_id=tab_id))
         return web.json_response({"success": True, "requested": True, "tab_id": tab_id})
 
     async def handle_new_chat(self, request: web.Request) -> web.Response:
