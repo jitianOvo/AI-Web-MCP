@@ -31,9 +31,9 @@ def main() -> int:
     for script in ("package_extension.py", "package_diagnostic.py"):
         run(script, [str(PYTHON), f"scripts/{script}"], environment)
     run("build cleanup preview", [str(PYTHON), "scripts/clean_build.py"], environment)
-    for script in ("background.js", "content.js", "popup.js"):
-        run(f"node check {script}", ["node", "--check", f"extension/{script}"], environment)
-    run("extension regressions", ["node", "--test", "tests/vision_extension.test.cjs", "tests/protocol_capture.test.cjs"], environment)
+    for script in sorted((ROOT / "extension").glob("*.js")):
+        run(f"node check {script.name}", ["node", "--check", str(script)], environment)
+    run("extension regressions", ["node", "--test", *[str(path) for path in sorted((ROOT / "tests").glob("*.test.cjs"))]], environment)
     run("extension protocol fixture", [str(PYTHON), "scripts/replay_extension_fixture.py"], environment)
     print("release_check=passed")
     return 0

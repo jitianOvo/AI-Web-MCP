@@ -200,7 +200,7 @@ async function prepareImage(message, input) {
   while (Date.now() < deadline) {
     if (cancelledRequestId === activeRequestId) throw bridgeError("REQUEST_CANCELLED", "请求已取消");
     if (composerImageState().ready) {
-      if (!await setPromptVerified(input, String(message.prompt || ""))) throw bridgeError("INPUT_WRITE_FAILED", "图片问题写入失败");
+      if (!message.upload_only && !await setPromptVerified(input, String(message.prompt || "请描述这张图片"))) throw bridgeError("INPUT_WRITE_FAILED", "图片问题写入失败");
       progress(activeRequestId, "VISION_UPLOADED");
       return composerImageState().image_count;
     }
@@ -400,6 +400,7 @@ async function executeTask(message) {
     const userBaseline = userMessageSnapshot();
     const responseBaseline = answerSnapshot();
     const uploadedImageCount = String(message.input_backend) === "image" ? await prepareImage(message, input) : 0;
+    if (message.upload_only === true && String(message.input_backend) === "image") return { success: true, result: "", stage: "UPLOADED", uploaded_image_count: uploadedImageCount, conversation_id: conversationId() };
     if (["cdp", "verify"].includes(String(message.input_backend || ""))) {
       progress(requestId, "INPUT_SENT");
       const baselineCount = responseBaseline;

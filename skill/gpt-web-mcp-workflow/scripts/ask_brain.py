@@ -16,8 +16,8 @@ import sys
 from pathlib import Path
 
 PROJECT_ROOT = Path(os.environ.get(
-    "GPT_WEB_MCP_ROOT",
-    r"D:\桌面\Work\GPT Web MCP",
+    "AI_WEB_MCP_ROOT", os.environ.get("GPT_WEB_MCP_ROOT",
+    r"D:\桌面\Work\AI-Web-MCP"),
 )).resolve()
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
@@ -35,8 +35,8 @@ def main() -> int:
     if not args.last and not args.prompt.strip():
         parser.error("prompt 不能为空（或使用 --last 只读最近回答）")
 
-    from gpt_web_mcp.client import BridgeClient, BridgeError  # noqa: E402
-    from gpt_web_mcp.agent_cli import select_target
+    from ai_web_mcp.client import BridgeClient, BridgeError  # noqa: E402
+    from ai_web_mcp.agent_cli import select_target
 
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     client = BridgeClient(timeout=args.timeout_ms / 1000 + 20)

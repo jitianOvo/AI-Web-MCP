@@ -20,7 +20,7 @@ class ExtensionManifestTests(unittest.TestCase):
     def test_popup_contains_actionable_connection_diagnostics(self):
         popup = (ROOT / "extension" / "popup.js").read_text(encoding="utf-8")
         self.assertIn("Bridge 未连接", popup)
-        self.assertIn("请打开 ChatGPT 标签页并点击绑定按钮", popup)
+        self.assertIn("请打开 AI 标签页并点击绑定按钮", popup)
         self.assertIn("页面脚本未就绪", popup)
 
     def test_background_buffers_events_while_bridge_is_disconnected(self):

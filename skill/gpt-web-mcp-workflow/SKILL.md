@@ -3,6 +3,8 @@ name: gpt-web-mcp-workflow
 description: 通过本地 GPT Web MCP 桥把网页端 ChatGPT 当作“规划大脑”、把本地 Agent 当作“执行者”的双角色自动工作流。当任务需要外部 AI 规划、多轮拍板、复杂方案拆解，或用户提供“需求+工作流规范 zip”要求全自动开工时使用；也用于复用网页端 ChatGPT 的日常咨询与验收。
 ---
 
+兼容技能：本技能仅用于 ChatGPT。AI-Web-MCP 的 GPT/GLM 统一入口和分步图片操作见同级 `ai-web-mcp` 技能。需要 GLM 时加载该技能并使用 `provider="glm"`，不要通过 GPT 专用工具代发。
+
 # GPT Web MCP 双角色工作流
 
 ## 适用场景
@@ -29,14 +31,14 @@ description: 通过本地 GPT Web MCP 桥把网页端 ChatGPT 当作“规划大
 没有 MCP 时，使用本技能的脚本：
 
 ```powershell
-& 'D:\桌面\Work\GPT Web MCP\runtime\venv\Scripts\python.exe' 'D:\桌面\Work\GPT Web MCP\skill\gpt-web-mcp-workflow\scripts\ask_brain.py' --url 'https://chatgpt.com/c/<conversation_id>' '接着之前的内容继续规划'
+& 'D:\桌面\Work\AI-Web-MCP\runtime\venv\Scripts\python.exe' 'D:\桌面\Work\AI-Web-MCP\skill\gpt-web-mcp-workflow\scripts\ask_brain.py' --url 'https://chatgpt.com/c/<conversation_id>' '接着之前的内容继续规划'
 ```
 
 先只读历史可追加 `--last` 并省略提示词。不要把会话地址只写进问题正文，必须通过 URL 参数选择目标。
 
 1. 调用 `browser_status`，要求 Bridge 在线、未暂停。
 2. 在 `targets` 中选 `tab_bound=true` 且 `page_ready=true` 的目标，并在本任务每次调用保留同一个 `target_id`。仅一个就绪目标可直接用；多个按当前任务指定，不猜第一项。
-3. Bridge 离线时，`Start-Process -FilePath 'D:\桌面\Work\GPT Web MCP\build\GPT Web MCP.exe' -WindowStyle Hidden`；等状态在线后继续，避免独立启动第二份 python 桥。
+3. Bridge 离线时，`Start-Process -FilePath 'D:\桌面\Work\AI-Web-MCP\build\AI Web MCP.exe' -WindowStyle Hidden`；等状态在线后继续，避免独立启动第二份 python 桥。
 4. 未绑定：唯一 ChatGPT 标签自动绑定；多标签使用 `list_chatgpt_tabs` + `bind_chatgpt_tab(tab_id=...)`。页面必须是正常 ChatGPT 聊天模式，Codex 模式不作为此桥的聊天目标。
 
 发送工具自身等待完整回答。调用成功就读取 `result`；超时先查询原任务和会话，不再发送相同问题作为“确认”。图片任务恢复必须复用原 `request_id`。

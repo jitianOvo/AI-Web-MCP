@@ -6,8 +6,8 @@ from pathlib import Path
 
 from aiohttp import ClientSession, web
 
-from gpt_web_mcp.bridge import SERVICE_KEY, create_app
-from gpt_web_mcp import __version__ as bridge_version
+from ai_web_mcp.bridge import SERVICE_KEY, create_app
+from ai_web_mcp import __version__ as bridge_version
 
 
 class BridgeRoundTripTests(unittest.IsolatedAsyncioTestCase):
@@ -51,7 +51,7 @@ class BridgeRoundTripTests(unittest.IsolatedAsyncioTestCase):
         ws = await self.session.ws_connect(self.ws_url, headers={"Origin": "chrome-extension://fixture"})
         await ws.receive_json()
         await ws.send_json({"type": "hello", "target_id": "unbound", "tab_bound": False})
-        with patch("gpt_web_mcp.bridge.OPEN_TARGET_READY_TIMEOUT", 0.1):
+        with patch("ai_web_mcp.bridge.OPEN_TARGET_READY_TIMEOUT", 0.1):
             task = asyncio.create_task(self.session.post(self.base_url + "/api/tabs/open",
                 headers={"X-Bridge-Token": self.token}, json={"url": "https://chatgpt.com/c/missing"}))
             message = await ws.receive_json()
@@ -573,6 +573,7 @@ class BridgeRoundTripTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue((await cancel.json())["cancelled"])
         self.assertEqual((await ws.receive_json())["type"], "cancel")
         self.assertEqual((await (await image).json())["error"]["code"], "REQUEST_CANCELLED")
+        self.assertEqual(self.app[SERVICE_KEY].store.get_task(task["request_id"])["state"], "cancelled")
         await ws.close()
 
     async def test_image_failure_is_not_redispatched_and_id_conflicts(self):

@@ -24,7 +24,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "rate_limit_window_sec": 60,
     "max_text_chars": 200000,
     "log_retention_days": 14,
-    "database_path": "data/gpt_web_mcp.sqlite3",
+    "database_path": "data/ai_web_mcp.sqlite3",
     "debug": False,
 }
 

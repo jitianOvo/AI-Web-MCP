@@ -10,6 +10,7 @@ docs/2026-11-03-restoration.md
 docs/2026-10-09_agent-skill-and-tray-fix.md
 docs/2026-10-09_vision-fix.md
 config/gpt_web_mcp.codex.toml
+config/ai_web_mcp.codex.toml
 research/
 *.local.json
 .env

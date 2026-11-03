@@ -11,7 +11,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from gpt_web_mcp.config import CONFIG_PATH, load_config  # noqa: E402
+from ai_web_mcp.config import CONFIG_PATH, load_config  # noqa: E402
 from configure_extension import main as configure_extension  # noqa: E402
 
 

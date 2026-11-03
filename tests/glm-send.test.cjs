@@ -1,0 +1,11 @@
+const {test}=require('node:test'); const assert=require('node:assert/strict'); const vm=require('node:vm'); const fs=require('node:fs');
+function setup() {
+ let listener, clicks=0, time=0, question=[], rows=[], enabled=false, inputEvents=0;
+ class Textarea { constructor(){this._value='';} get value(){return this._value;} set value(v){this._value=v;} dispatchEvent(){inputEvents++;} }
+ const editor=new Textarea(); const button={classList:{contains:()=>!enabled},getAttribute:()=>null,click(){clicks++; question.push({innerText:'hello'});rows.push({id:'row-answer-1',querySelector:()=>({}),querySelectorAll:()=>[{closest:()=>null,innerText:'world'}]});}};
+ const document={title:'GLM',body:{innerText:''},querySelector(s){if(s==='#search-input-box textarea')return editor;if(s==='.enter-icon-container')return button;if(s==='.search-box-container')return null;return null;},querySelectorAll(s){if(s==='.answer')return rows;if(s.startsWith('[id^="row-question-p-"'))return question;return [];}};
+ const context={document,location:{href:'https://chatglm.cn/main/alltoolsdetail?cid=abc'},URL,HTMLTextAreaElement:Textarea,Event:class{},Date:{now:()=>time},setTimeout(fn,ms){time+=ms; if(inputEvents)enabled=true;queueMicrotask(fn);},chrome:{runtime:{onMessage:{addListener(f){listener=f;}},sendMessage:async(m)=>{if(m.type==='bridge_glm_click_send')button.click();return {success:true};}}}};vm.createContext(context);vm.runInContext(fs.readFileSync('extension/glm.js','utf8'),context);
+ return {invoke:(m)=>new Promise(resolve=>listener(m,{},resolve)),stats:()=>({clicks,inputEvents,time}),setEnabled:v=>enabled=v};
+}
+test('waits for reactive send control, then acknowledges new matching question',async()=>{const h=setup();const r=await h.invoke({type:'bridge_task',request_id:'r',prompt:'hello',timeout_ms:12000});assert.equal(r.success,true);assert.equal(r.result,'world');assert.equal(h.stats().clicks,1);assert.ok(h.stats().time>=3100);});
+test('does not claim success if the submitted question is not observed',async()=>{const h=setup();const r=await h.invoke({type:'bridge_task',request_id:'r',prompt:'different',timeout_ms:4000});assert.equal(r.success,false);assert.equal(r.code,'DELIVERY_UNCERTAIN');assert.equal(h.stats().clicks,1);});

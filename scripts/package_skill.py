@@ -9,7 +9,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SKILL_DIR = ROOT / "skill" / "gpt-web-mcp-workflow"
 BUILD = ROOT / "build"
-OUTPUT = BUILD / "GPT-Web-MCP-工作流规范.zip"
+OUTPUT = BUILD / "AI-Web-MCP-工作流规范.zip"
 
 
 def main() -> int:
@@ -17,8 +17,8 @@ def main() -> int:
         print(f"missing SKILL.md: {SKILL_DIR}")
         return 1
     BUILD.mkdir(parents=True, exist_ok=True)
-    for skill, output in ((SKILL_DIR, OUTPUT),
-            (ROOT / "skill" / "gpt-web-vision", BUILD / "GPT-Web-MCP-视觉技能.zip")):
+    for skill, output in ((ROOT / "skill" / "ai-web-mcp", BUILD / "AI-Web-MCP-skill.zip"), (SKILL_DIR, OUTPUT),
+            (ROOT / "skill" / "gpt-web-vision", BUILD / "AI-Web-MCP-视觉技能.zip")):
         with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as archive:
             for path in sorted(skill.rglob("*")):
                 if path.is_file() and "__pycache__" not in path.parts:

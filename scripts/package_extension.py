@@ -16,7 +16,7 @@ def main() -> None:
     manifest = json.loads((EXTENSION / "manifest.json").read_text(encoding="utf-8"))
     version = str(manifest["version"])
     BUILD.mkdir(parents=True, exist_ok=True)
-    output = BUILD / f"GPT-Web-MCP-extension-v{version}.zip"
+    output = BUILD / f"AI-Web-MCP-extension-v{version}.zip"
     with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         for path in sorted(EXTENSION.rglob("*")):
             if path.name in {"config.js", "config.example.js"} or path.is_dir():

@@ -3,6 +3,8 @@ name: gpt-web-vision
 description: 纯文本 AI Agent 的本地图片理解入口。通过已登录的网页 ChatGPT 返回图片描述、文字、布局或坐标；适用于 Milk Code、DeepSeek 等无视觉模型。已有视觉能力时无需调用。
 ---
 
+兼容技能：本技能仅用于 ChatGPT。AI-Web-MCP 的 GPT/GLM 统一入口和分步图片操作见同级 `ai-web-mcp` 技能。需要 GLM 时加载该技能并使用 `provider="glm"`，不要通过 GPT 专用工具代发。
+
 # 一次调用取得视觉结果
 
 先使用下面的入口，不要自己编写剪贴板、浏览器上传或重试代码。
@@ -36,13 +38,13 @@ Windows PowerShell 7，从任意工作目录运行。只替换图片路径与问
 只读自检：
 
 ```powershell
-& 'D:\桌面\Work\GPT Web MCP\runtime\venv\Scripts\python.exe' 'C:\Users\20970\.codex\skills\gpt-web-vision\scripts\vision.py' doctor
+& 'D:\桌面\Work\AI-Web-MCP\runtime\venv\Scripts\python.exe' 'C:\Users\20970\.codex\skills\gpt-web-vision\scripts\vision.py' doctor
 ```
 
 一次看图（自动选择唯一就绪目标，自动内容去重）：
 
 ```powershell
-& 'D:\桌面\Work\GPT Web MCP\runtime\venv\Scripts\python.exe' 'C:\Users\20970\.codex\skills\gpt-web-vision\scripts\vision.py' vision --image '图片绝对路径' --question '列出图中文字、主要布局，标出目标按钮的位置'
+& 'D:\桌面\Work\AI-Web-MCP\runtime\venv\Scripts\python.exe' 'C:\Users\20970\.codex\skills\gpt-web-vision\scripts\vision.py' vision --image '图片绝对路径' --question '列出图中文字、主要布局，标出目标按钮的位置'
 ```
 
 需要可追踪任务时追加 `--request-id vision-本次唯一ID`；长问题写到 UTF-8 文件，使用 `--question-file '问题文件绝对路径'`。`--output '结果文件绝对路径'` 可保存 JSON。脚本退出码 0 表示成功、1 表示失败，stdout 始终输出 UTF-8 JSON。
@@ -50,7 +52,7 @@ Windows PowerShell 7，从任意工作目录运行。只替换图片路径与问
 查询已有任务，绝不重新发送：
 
 ```powershell
-& 'D:\桌面\Work\GPT Web MCP\runtime\venv\Scripts\python.exe' 'C:\Users\20970\.codex\skills\gpt-web-vision\scripts\vision.py' task --request-id '原request_id'
+& 'D:\桌面\Work\AI-Web-MCP\runtime\venv\Scripts\python.exe' 'C:\Users\20970\.codex\skills\gpt-web-vision\scripts\vision.py' task --request-id '原request_id'
 ```
 
 脚本会处理导入路径、参数编码、目标选择、重复请求和错误输出。省略 ID 时也会在发送前计算稳定 ID，断线错误仍返回该 ID，按原 ID 查询即可。不要把项目路径当作当前工作目录要求，不需要创建临时 Python 文件。不在本机安装时设置 `GPT_WEB_MCP_ROOT` 为实际项目目录，并使用实际 Python 与本技能脚本路径。
@@ -64,7 +66,7 @@ Windows PowerShell 7，从任意工作目录运行。只替换图片路径与问
 | `COMPOSER_NOT_EMPTY` | 停止本次发送，报告目标输入框已有草稿/附件；不得擅自清除或再次追加 |
 | `NO_READY_TARGET` / `TARGET_NOT_READY` / `IMAGE_INPUT_NOT_FOUND` | 自检目标，确认处于正常 ChatGPT 聊天模式；Codex 模式不是图片桥目标 |
 | `TARGET_REQUIRED` | 从自检返回的就绪列表选择与当前任务对应的目标 |
-| `BRIDGE_OFFLINE` | 用 `Start-Process -WindowStyle Hidden` 启动项目 `build\GPT Web MCP.exe`，等自检在线后再执行一次 |
+| `BRIDGE_OFFLINE` | 用 `Start-Process -WindowStyle Hidden` 启动项目 `build\AI Web MCP.exe`，等自检在线后再执行一次 |
 | `PAUSED` / `PAGE_GENERATING` / `EXTENSION_BUSY` | 等待或按当前任务授权取消原任务；不要循环发送 |
 | 上传失败、断线、重启、任务 failed/interrupted | 保留原 ID 与错误，检查网页和任务记录；需要新任务时明确建立新 ID |
 

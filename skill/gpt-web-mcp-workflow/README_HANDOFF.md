@@ -10,7 +10,7 @@
 ## 使用方法
 
 1. 先准备好本地运行条件：
-   - Bridge：`D:\桌面\Work\GPT Web MCP\scripts\start_bridge.ps1`（或托盘 `start_bridge_tray.cmd`）。
+   - Bridge：`D:\桌面\Work\AI-Web-MCP\scripts\start_bridge.ps1`（或托盘 `start_bridge_tray.cmd`）。
    - Edge 加载 `extension` 未解压扩展，并打开已登录的 ChatGPT 标签页（单标签自动绑定）。
 2. 把**手写需求文件**（或直接文字需求）交给 Agent。
 3. 告诉 Agent：按 `SKILL.md` 的工作循环开始（身份声明 → 大脑规划 → 执行 → 回报 → 裁决 → 直到可用）。

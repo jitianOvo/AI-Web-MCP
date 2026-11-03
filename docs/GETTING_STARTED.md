@@ -1,3 +1,5 @@
+最新多提供方安装和使用以 [README](../README.md) 为准；本文保留早期 GPT 流程，GLM 使用通用工具。
+
 # V1 首次使用
 
 ## 1. 初始化本地环境
@@ -5,13 +7,13 @@
 项目已经将 Python 依赖安装在：
 
 ```text
-D:\桌面\Work\GPT Web MCP\runtime\venv
+D:\桌面\Work\AI-Web-MCP\runtime\venv
 ```
 
 如果需要重新安装：
 
 ```powershell
-Set-Location -LiteralPath 'D:\桌面\Work\GPT Web MCP'
+Set-Location -LiteralPath 'D:\桌面\Work\AI-Web-MCP'
 & '.\runtime\venv\Scripts\python.exe' -m pip install -r requirements.txt
 ```
 
@@ -20,21 +22,21 @@ Set-Location -LiteralPath 'D:\桌面\Work\GPT Web MCP'
 也可以执行统一本地初始化：
 
 ```powershell
-Set-Location -LiteralPath 'D:\桌面\Work\GPT Web MCP'
+Set-Location -LiteralPath 'D:\桌面\Work\AI-Web-MCP'
 & '.\runtime\venv\Scripts\python.exe' scripts/setup_local.py
 ```
 
 ## 2. 配置扩展
 
 ```powershell
-Set-Location -LiteralPath 'D:\桌面\Work\GPT Web MCP'
+Set-Location -LiteralPath 'D:\桌面\Work\AI-Web-MCP'
 & '.\runtime\venv\Scripts\python.exe' scripts/configure_extension.py
 ```
 
 在 Edge 或 Chrome 打开扩展管理页，开启开发者模式，选择“加载已解压的扩展”，目录选择：
 
 ```text
-D:\桌面\Work\GPT Web MCP\extension
+D:\桌面\Work\AI-Web-MCP\extension
 ```
 
 打开 ChatGPT 网页，在扩展弹窗中点击“绑定当前 ChatGPT 标签页”。
@@ -50,15 +52,15 @@ D:\桌面\Work\GPT Web MCP\extension
 ## 3. 启动 Bridge
 
 ```powershell
-Set-Location -LiteralPath 'D:\桌面\Work\GPT Web MCP'
+Set-Location -LiteralPath 'D:\桌面\Work\AI-Web-MCP'
 & powershell -ExecutionPolicy Bypass -File '.\scripts\start_bridge.ps1'
 ```
 
 也可以直接运行：
 
 ```powershell
-$env:PYTHONPATH = 'D:\桌面\Work\GPT Web MCP\src'
-& '.\runtime\venv\Scripts\python.exe' -m gpt_web_mcp.bridge
+$env:PYTHONPATH = 'D:\桌面\Work\AI-Web-MCP\src'
+& '.\runtime\venv\Scripts\python.exe' -m ai_web_mcp.bridge
 ```
 
 MCP 工具在调用时也会尝试自动启动 Bridge。
@@ -66,7 +68,7 @@ MCP 工具在调用时也会尝试自动启动 Bridge。
 停止 Bridge：
 
 ```powershell
-Set-Location -LiteralPath 'D:\桌面\Work\GPT Web MCP'
+Set-Location -LiteralPath 'D:\桌面\Work\AI-Web-MCP'
 & powershell -ExecutionPolicy Bypass -File '.\scripts\stop_bridge.ps1'
 ```
 
@@ -77,7 +79,7 @@ Set-Location -LiteralPath 'D:\桌面\Work\GPT Web MCP'
 
 ### 统一 EXE 入口（V4 推荐）
 
-双击 `build\GPT Web MCP.exe` 即可：自动启动 Bridge、显示控制台日志、创建右下角托盘图标；
+双击 `build\AI-Web-MCP.exe` 即可：自动启动 Bridge、显示控制台日志、创建右下角托盘图标；
 点控制台右上角 X 只隐藏窗口不退出；左键托盘显示/隐藏控制台，右键可“启动/暂停、关闭”；关闭时自动停止子进程。
 
 ## 4. 配置 Codex MCP
@@ -85,19 +87,19 @@ Set-Location -LiteralPath 'D:\桌面\Work\GPT Web MCP'
 可以先生成项目内的配置片段：
 
 ```powershell
-Set-Location -LiteralPath 'D:\桌面\Work\GPT Web MCP'
+Set-Location -LiteralPath 'D:\桌面\Work\AI-Web-MCP'
 & '.\runtime\venv\Scripts\python.exe' scripts/generate_codex_config.py
 ```
 
-生成文件为 `config/gpt_web_mcp.codex.toml`，将其内容合并到 Codex 的 `config.toml`。
+生成文件为 `config/ai_web_mcp.codex.toml`，将其内容合并到 Codex 的 `config.toml`。
 
 在 Codex 的 `config.toml` 中加入本地 stdio MCP 服务：
 
 ```toml
-[mcp_servers.gpt_web_mcp]
-command = "D:/桌面/Work/GPT Web MCP/runtime/venv/Scripts/python.exe"
-args = ["D:/桌面/Work/GPT Web MCP/scripts/run_mcp.py"]
-cwd = "D:/桌面/Work/GPT Web MCP"
+[mcp_servers.ai_web_mcp]
+command = "D:/桌面/Work/AI-Web-MCP/runtime/venv/Scripts/python.exe"
+args = ["D:/桌面/Work/AI-Web-MCP/scripts/run_mcp.py"]
+cwd = "D:/桌面/Work/AI-Web-MCP"
 startup_timeout_sec = 15
 tool_timeout_sec = 660
 ```

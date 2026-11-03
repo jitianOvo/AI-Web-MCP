@@ -1,4 +1,4 @@
-﻿# GPT Web MCP Bridge 托盘程序
+# AI Web MCP Bridge 托盘程序
 # 用法: powershell -ExecutionPolicy Bypass -File bridge_tray.ps1 [-SelfTest]
 # 关闭(X)/最小化 -> 隐藏到托盘(静默); 托盘菜单: 显示状态 / 开启桥接 / 暂停桥接 / 退出程序
 param([switch]$SelfTest)
@@ -11,7 +11,7 @@ $ProjectRoot = Split-Path -Parent $PSScriptRoot
 $Python = Join-Path $ProjectRoot "runtime\venv\Scripts\python.exe"
 if (-not (Test-Path -LiteralPath $Python)) { $Python = (Get-Command python).Source }
 $ConfigPath = Join-Path $ProjectRoot "config\config.json"
-$IconPath = Join-Path $ProjectRoot "res\GPT_Web_MCP_iconic.png"
+$IconPath = Join-Path $ProjectRoot "res\AI_Web_MCP_iconic.png"
 $BridgeUrl = "http://127.0.0.1:8765"
 $Token = ""
 if (Test-Path -LiteralPath $ConfigPath) {
@@ -37,7 +37,7 @@ function Start-BridgeIfNeeded {
   $status = Get-BridgeStatus
   if ($status) { return }
   $env:PYTHONPATH = Join-Path $ProjectRoot "src"
-  $script:BridgeProcess = Start-Process -FilePath $Python -ArgumentList "-m", "gpt_web_mcp.bridge" `
+  $script:BridgeProcess = Start-Process -FilePath $Python -ArgumentList "-m", "ai_web_mcp.bridge" `
     -WorkingDirectory $ProjectRoot -WindowStyle Hidden -PassThru
   $script:StartedByMe = $true
   $deadline = [DateTime]::Now.AddSeconds(12)
@@ -69,7 +69,7 @@ function Update-StatusWindow {
     $lblTab.Text = "绑定: -"
     $lblState.Text = "状态: offline"
     $lblError.Text = "Bridge 未运行。点托盘菜单「开启桥接」。"
-    Set-TrayTooltip "GPT Web MCP: 离线"
+    Set-TrayTooltip "AI Web MCP: 离线"
     return
   }
   $lblBridge.Text = "Bridge: 在线 v" + $status.bridge_version
@@ -80,7 +80,7 @@ function Update-StatusWindow {
   $lblState.Text = "状态: " + $status.response_state
   $tabCount = @($status.chatgpt_tabs).Count
   $lblError.Text = "ChatGPT 标签页: $tabCount 个; 活动任务: $($status.active_jobs)"
-  Set-TrayTooltip ("GPT Web MCP: " + $status.extension + " / " + $status.page + " / " + $status.response_state)
+  Set-TrayTooltip ("AI Web MCP: " + $status.extension + " / " + $status.page + " / " + $status.response_state)
 }
 
 function Set-TrayTooltip([string]$text) {
@@ -91,7 +91,7 @@ function Set-TrayTooltip([string]$text) {
 
 # ---------- 控件 ----------
 $form = New-Object System.Windows.Forms.Form
-$form.Text = "GPT Web MCP Bridge"
+$form.Text = "AI Web MCP Bridge"
 $form.Width = 420
 $form.Height = 240
 $form.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
@@ -169,7 +169,7 @@ $menu.Items.Add($itemStart) | Out-Null
 $menu.Items.Add($itemStop) | Out-Null
 $menu.Items.Add($itemExit) | Out-Null
 $notify.ContextMenuStrip = $menu
-$notify.Text = "GPT Web MCP Bridge"
+$notify.Text = "AI Web MCP Bridge"
 $notify.Visible = $true
 
 $itemShow.Add_Click({

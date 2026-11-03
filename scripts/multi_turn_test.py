@@ -36,7 +36,7 @@ def main() -> int:
     parser.add_argument("--timeout-ms", type=int, default=180000)
     args = parser.parse_args()
 
-    from gpt_web_mcp.client import BridgeClient  # noqa: E402
+    from ai_web_mcp.client import BridgeClient  # noqa: E402
 
     client = BridgeClient(timeout=args.timeout_ms / 1000 + 30)
     client.ensure_running()

@@ -14,8 +14,9 @@ from aiohttp import ClientSession
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from gpt_web_mcp.client import BridgeClient  # noqa: E402
-from gpt_web_mcp.config import load_config  # noqa: E402
+from ai_web_mcp.client import BridgeClient  # noqa: E402
+from ai_web_mcp.config import load_config  # noqa: E402
+from ai_web_mcp.protocol import new_request_id  # noqa: E402
 
 
 async def run_fixture(content: str, result: str, target_id: str, conversation_id: str) -> dict:
@@ -42,7 +43,8 @@ async def run_fixture(content: str, result: str, target_id: str, conversation_id
                     "page_ready": True,
                     "tab_id": 999,
                     "tab_title": "GPT Web MCP Fixture",
-                    "tab_url": "https://chatgpt.com/c/fixture",
+                    "tab_url": "https://chatgpt.com/c/" + conversation_id,
+                    "conversation_id": conversation_id,
                     "browser": "fixture",
                     "browser_version": "0",
                 })
@@ -50,14 +52,14 @@ async def run_fixture(content: str, result: str, target_id: str, conversation_id
                     base_url + "/api/chat/send",
                     headers=request_headers,
                     json={
-                        "request_id": "fixture-script-request",
+                        "request_id": new_request_id("fixture"),
                         "target_id": target_id,
                         "conversation_id": conversation_id,
                         "content": content,
                         "timeout_ms": 10000,
                     },
                 ))
-                task = await websocket.receive_json()
+                task = await asyncio.wait_for(websocket.receive_json(), timeout=12)
                 if task.get("type") != "task":
                     raise RuntimeError(f"expected task, got {task}")
                 await websocket.send_json({

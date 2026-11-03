@@ -17,18 +17,24 @@ def main() -> None:
     version = str(manifest["version"])
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     BUILD.mkdir(parents=True, exist_ok=True)
-    output = BUILD / f"GPT-Web-MCP-diagnostic-v{version}-{stamp}.zip"
+    output = BUILD / f"AI-Web-MCP-diagnostic-v{version}-{stamp}.zip"
     include_files = [
         ROOT / "README.md",
         ROOT / "requirements.txt",
         ROOT / "pyproject.toml",
         ROOT / "config" / "config.example.json",
         ROOT / "config" / "personas.example.json",
-        ROOT / "config" / "gpt_web_mcp.codex.toml",
         ROOT / "extension" / "manifest.json",
         ROOT / "extension" / "config.example.js",
     ]
-    include_files.extend(sorted((ROOT / "docs").glob("*.md")))
+    # Generated local acceptance notes may contain private conversation URLs.
+    public_docs = (
+        "ARCHITECTURE.md", "RELEASES.md", "GETTING_STARTED.md", "PROTOCOL.md",
+        "PERSONA_FORMAT.md", "ROADMAP.md", "WORK_FILES.md", "ACCEPTANCE_MATRIX.md",
+        "REAL_BROWSER_RUNBOOK.md", "V1_SINGLE_TAB.md", "V2_MULTI_TARGET_PERSONA.md",
+        "V3_LONG_RUNNING_CAPTURE.md", "V4_PACKAGING_OPERATIONS.md",
+    )
+    include_files.extend(ROOT / "docs" / name for name in public_docs)
     with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         for path in include_files:
             if path.exists():

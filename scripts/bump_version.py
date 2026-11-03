@@ -10,7 +10,7 @@ import re
 ROOT = Path(__file__).resolve().parents[1]
 VERSION_FIELDS = {
     "pyproject.toml": re.compile(r'(?m)^(version\s*=\s*")([^"\r\n]+)(")'),
-    "src/gpt_web_mcp/__init__.py": re.compile(r'(?m)^(__version__\s*=\s*")([^"\r\n]+)(")'),
+    "src/ai_web_mcp/__init__.py": re.compile(r'(?m)^(__version__\s*=\s*")([^"\r\n]+)(")'),
     "extension/manifest.json": re.compile(r'("version"\s*:\s*")([^"\r\n]+)(")'),
     "launcher/main.cpp": re.compile(r'(L"版本 )([^\\"\r\n]+)(\\r\\n\\r\\n")'),
 }

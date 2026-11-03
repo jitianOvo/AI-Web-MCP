@@ -10,8 +10,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from gpt_web_mcp.client import BridgeClient, BridgeError  # noqa: E402
-from gpt_web_mcp.config import load_config, resolve_project_path  # noqa: E402
+from ai_web_mcp.client import BridgeClient, BridgeError  # noqa: E402
+from ai_web_mcp.config import load_config, resolve_project_path  # noqa: E402
 
 
 def main() -> int:

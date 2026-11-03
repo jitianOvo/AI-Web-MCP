@@ -12,8 +12,8 @@
 #pragma comment(lib, "wininet.lib")
 #pragma comment(lib, "advapi32.lib")
 
-static const wchar_t* MAIN_CLASS = L"GPTWebMCPMainWindow";
-static const wchar_t* MSG_CLASS = L"GPTWebMCPMsgWindow";
+static const wchar_t* MAIN_CLASS = L"AIWebMCPMainWindow";
+static const wchar_t* MSG_CLASS = L"AIWebMCPMsgWindow";
 static const int IDM_SHOW = 1;
 static const int IDM_TOGGLE = 2;
 static const int IDM_EXIT = 3;
@@ -76,7 +76,7 @@ struct HttpReply { DWORD status = 0; std::string body; DWORD error = 0; };
 
 static HttpReply HttpRequest(const wchar_t* method, const wchar_t* path) {
     HttpReply reply;
-    HINTERNET session = InternetOpenW(L"GPT-Web-MCP", INTERNET_OPEN_TYPE_DIRECT, nullptr, nullptr, 0);
+    HINTERNET session = InternetOpenW(L"AI-Web-MCP", INTERNET_OPEN_TYPE_DIRECT, nullptr, nullptr, 0);
     if (!session) { reply.error = GetLastError(); return reply; }
     DWORD timeout = 1500;
     InternetSetOptionW(session, INTERNET_OPTION_CONNECT_TIMEOUT, &timeout, sizeof(timeout));
@@ -141,7 +141,7 @@ static void RefreshStatus() {
 
 static void UpdateMainText(HWND hwnd) {
     std::wstring text =
-        L"版本 1.0.0\r\n\r\n"
+        L"版本 1.1.0\r\n\r\n"
         L"桥服务: " + g_status_bridge + L"\r\n"
         L"扩展:   " + g_status_ext + L"\r\n"
         L"页面:   " + g_status_page + L"\r\n"
@@ -160,7 +160,7 @@ static void UpdateMainText(HWND hwnd) {
             GlobalUnlock(g_hText);
         }
     }
-    SetWindowTextW(hwnd, (L"GPT Web MCP Bridge — " + g_status_bridge + L" / " + g_status_ext + L" / " + g_status_page + L" / " + g_status_target).c_str());
+    SetWindowTextW(hwnd, (L"AI Web MCP Bridge — " + g_status_bridge + L" / " + g_status_ext + L" / " + g_status_page + L" / " + g_status_target).c_str());
     InvalidateRect(hwnd, 0, TRUE);
 }
 
@@ -171,7 +171,7 @@ static void StartBridge() {
         python = L"python";
     }
     SetEnvironmentVariableW(L"PYTHONPATH", (g_root + L"\\src").c_str());
-    std::wstring cmd = L"\"" + python + L"\" -m gpt_web_mcp.bridge";
+    std::wstring cmd = L"\"" + python + L"\" -m ai_web_mcp.bridge";
     STARTUPINFOW si;
     PROCESS_INFORMATION pi;
     ZeroMemory(&si, sizeof(si));
@@ -236,7 +236,7 @@ static void UpdateTrayIcon() {
     nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
     nid.uCallbackMessage = WM_TRAY;
     nid.hIcon = g_icon;
-    wcscpy_s(nid.szTip, L"GPT Web MCP Bridge");
+    wcscpy_s(nid.szTip, L"AI Web MCP Bridge");
     Shell_NotifyIconW(NIM_ADD, &nid);
     Shell_NotifyIconW(NIM_SETVERSION, &nid);
 }
@@ -308,7 +308,7 @@ static LRESULT CALLBACK MainProc(HWND hwnd, UINT msg, WPARAM w, LPARAM l) {
                 0, 0, CLEARTYPE_QUALITY, 0, L"Microsoft YaHei UI");
             RECT rc;
             GetClientRect(hwnd, &rc);
-            const wchar_t* head = L"GPT Web MCP Bridge";
+            const wchar_t* head = L"AI Web MCP Bridge";
             rc.left += 16;
             rc.top += 6;
             HFONT old = (HFONT)SelectObject(dc, title);
@@ -357,14 +357,14 @@ int APIENTRY wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR commandLine, int) {
         return g_status_error.empty() ? 0 : 1;
     }
 
-    g_mutex = CreateMutexW(0, TRUE, L"GPT-Web-MCP-SingleInstance");
+    g_mutex = CreateMutexW(0, TRUE, L"AI-Web-MCP-SingleInstance");
     if (g_mutex && GetLastError() == ERROR_ALREADY_EXISTS) {
         HWND other = FindWindowW(MAIN_CLASS, 0);
         if (other) { ShowWindow(other, SW_SHOW); SetForegroundWindow(other); }
         return 0;
     }
 
-    std::wstring ico = g_root + L"\\res\\GPT_Web_MCP_iconic.ico";
+    std::wstring ico = g_root + L"\\res\\AI_Web_MCP_iconic.ico";
     g_icon = (HICON)LoadImageW(0, ico.c_str(), IMAGE_ICON, 32, 32, LR_LOADFROMFILE);
     if (!g_icon) g_icon = (HICON)LoadImageW(hInst, MAKEINTRESOURCEW(1), IMAGE_ICON, 32, 32, 0);
     if (!g_icon) g_icon = LoadIconW(0, IDI_APPLICATION);
@@ -384,7 +384,7 @@ int APIENTRY wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR commandLine, int) {
     wc.lpszClassName = MSG_CLASS;
     RegisterClassW(&wc);
 
-    g_main = CreateWindowExW(0, MAIN_CLASS, L"GPT Web MCP Bridge",
+    g_main = CreateWindowExW(0, MAIN_CLASS, L"AI Web MCP Bridge",
         WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
         CW_USEDEFAULT, CW_USEDEFAULT, 520, 340, 0, 0, hInst, 0);
     g_msgwin = CreateWindowExW(0, MSG_CLASS, L"tray", 0, 0, 0, 0, 0,

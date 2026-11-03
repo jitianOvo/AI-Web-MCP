@@ -2,7 +2,7 @@
 
 ## 本地入口
 
-- 项目根目录：`D:\桌面\Work\GPT Web MCP`
+- 项目根目录：`D:\桌面\Work\AI-Web-MCP`
 - Bridge：`http://127.0.0.1:8765`（token 在 `config/config.json` 的 `bridge_token`）
 - 启动：`scripts\start_bridge.ps1`；停止：`scripts\stop_bridge.ps1`；托盘：`scripts\start_bridge_tray.cmd`
 - 健康自检：`python scripts/health_report.py`；统一校验：`python scripts/release_check.py`

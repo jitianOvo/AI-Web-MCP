@@ -12,7 +12,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from gpt_web_mcp.client import BridgeClient  # noqa: E402
+from ai_web_mcp.client import BridgeClient  # noqa: E402
 
 TOKEN_A = "4173"
 TOKEN_B = "9268"

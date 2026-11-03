@@ -39,10 +39,10 @@ def candidates() -> list[Path]:
         paths += list((ROOT / "tmp").iterdir())
     # Keep the currently versioned extension and both distinct skill packages.
     version = json.loads((ROOT / "extension/manifest.json").read_text(encoding="utf-8"))["version"]
-    keep = {f"GPT-Web-MCP-extension-v{version}.zip", f"GPT-Web-MCP-v{version}-windows.zip",
-            "GPT-Web-MCP-工作流规范.zip", "GPT-Web-MCP-视觉技能.zip"}
+    keep = {f"AI-Web-MCP-extension-v{version}.zip", f"AI-Web-MCP-v{version}-windows.zip",
+            "AI-Web-MCP-工作流规范.zip", "AI-Web-MCP-视觉技能.zip", "AI-Web-MCP-skill.zip"}
     paths += [p for p in (ROOT / "build").glob("*.zip") if p.name not in keep]
-    paths += [ROOT / "build/GPT Web MCP.next.exe"]
+    paths += [ROOT / "build/AI Web MCP.next.exe"]
     selected: list[Path] = []
     for path in sorted(set(paths), key=lambda p: len(p.parts)):
         if path.exists():

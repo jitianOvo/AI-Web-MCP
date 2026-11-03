@@ -44,7 +44,7 @@ function Render-Icon([int]$size) {
     return ,$result
 }
 $master = Render-Icon 1024
-$master.Save((Join-Path $root 'res\GPT_Web_MCP_iconic.png'),[System.Drawing.Imaging.ImageFormat]::Png)
+$master.Save((Join-Path $root 'res\AI_Web_MCP_iconic.png'),[System.Drawing.Imaging.ImageFormat]::Png)
 $master.Dispose()
 $entries = @()
 foreach ($size in @(16,24,32,48,64,128,256)) {
@@ -55,7 +55,7 @@ foreach ($size in @(16,24,32,48,64,128,256)) {
     $entries += @{ Size=$size; Data=$stream.ToArray() }
     $stream.Dispose(); $bmp.Dispose()
 }
-$file = [System.IO.File]::Create((Join-Path $root 'res\GPT_Web_MCP_iconic.ico'))
+$file = [System.IO.File]::Create((Join-Path $root 'res\AI_Web_MCP_iconic.ico'))
 $writer = [System.IO.BinaryWriter]::new($file)
 $writer.Write([uint16]0); $writer.Write([uint16]1); $writer.Write([uint16]$entries.Count)
 $offset = 6 + 16 * $entries.Count

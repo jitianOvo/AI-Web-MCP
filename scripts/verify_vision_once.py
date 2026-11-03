@@ -2,7 +2,7 @@
 import argparse
 import json
 from pathlib import Path
-from gpt_web_mcp.client import BridgeClient, BridgeError
+from ai_web_mcp.client import BridgeClient, BridgeError
 
 def main():
     parser = argparse.ArgumentParser()

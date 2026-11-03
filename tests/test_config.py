@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from gpt_web_mcp import config
+from ai_web_mcp import config
 
 
 class ConfigTests(unittest.TestCase):

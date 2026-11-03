@@ -19,7 +19,7 @@ class VersionTests(unittest.TestCase):
         self.root = Path(self.directory.name)
         self.contents = {
             "pyproject.toml": '[project]\r\nname = "fixture"\r\nversion = "1.0.0"\r\n',
-            "src/gpt_web_mcp/__init__.py": '__version__ = "1.0.0"\nPROTOCOL_VERSION = "1.0"\n',
+            "src/ai_web_mcp/__init__.py": '__version__ = "1.0.0"\nPROTOCOL_VERSION = "1.0"\n',
             "extension/manifest.json": '{"manifest_version": 3, "version": "1.0.0"}\n',
             "launcher/main.cpp": 'const auto text = L"版本 1.0.0\\r\\n\\r\\n";\r\n',
         }

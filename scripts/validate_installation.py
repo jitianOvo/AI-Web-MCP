@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from gpt_web_mcp import __version__  # noqa: E402
+from ai_web_mcp import __version__  # noqa: E402
 
 
 ROOT = Path(__file__).resolve().parents[1]

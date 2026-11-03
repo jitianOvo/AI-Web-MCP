@@ -3,7 +3,7 @@ import unittest
 import sqlite3
 from pathlib import Path
 
-from gpt_web_mcp.storage import Store
+from ai_web_mcp.storage import Store
 
 
 class StorageTests(unittest.TestCase):

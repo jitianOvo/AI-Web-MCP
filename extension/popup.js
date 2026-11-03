@@ -16,7 +16,7 @@ async function refresh() {
   if (!status?.bridgeConnected) {
     $("detail").textContent = "Bridge 未连接：请启动 scripts/start_bridge.ps1";
   } else if (!status?.tabBound) {
-    $("detail").textContent = "请打开 ChatGPT 标签页并点击绑定按钮";
+    $("detail").textContent = "请打开 AI 标签页并点击绑定按钮";
   } else if (!status?.pageReady) {
     $("detail").textContent = "标签页已绑定，但页面脚本未就绪；请刷新 ChatGPT 页面";
   } else {

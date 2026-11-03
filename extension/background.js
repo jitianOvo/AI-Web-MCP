@@ -1,4 +1,4 @@
-importScripts("config.js");
+importScripts("config.js", "providers.js");
 
 const CONTROL_TARGET_ID = "unbound";
 let sockets = new Map();
@@ -9,7 +9,7 @@ let heartbeatTimer = null;
 let pendingEventWrite = Promise.resolve();
 const MAX_PENDING_EVENTS = 500;
 
-chrome.storage.local.get(["boundTabs", "boundTabId"]).then((saved) => {
+chrome.storage.local.get(["boundTabs", "boundTabId"]).then(async (saved) => {
   boundTabs = saved.boundTabs && typeof saved.boundTabs === "object" ? saved.boundTabs : {};
   if (Number.isInteger(saved.boundTabId) && !Object.values(boundTabs).includes(saved.boundTabId)) {
     boundTabs["bound-tab"] = saved.boundTabId;
@@ -25,7 +25,7 @@ function ensureReconnectAlarm() {
 }
 
 function isChatGPTUrl(url) {
-  return Boolean(url && (url.startsWith("https://chatgpt.com/") || url.startsWith("https://chat.openai.com/")));
+  return Boolean(GPT_WEB_PROVIDERS.detect(url));
 }
 
 function browserInfo() {
@@ -38,10 +38,11 @@ function browserInfo() {
 }
 
 async function chatgptTabs() {
-  const tabs = await chrome.tabs.query({ url: ["https://chatgpt.com/*", "https://chat.openai.com/*"] });
+  const tabs = await chrome.tabs.query({ url: ["https://chatgpt.com/*", "https://chat.openai.com/*", "https://chatglm.cn/*"] });
   return tabs.map((tab) => ({
     tab_id: tab.id,
     tab_title: tab.title || "",
+    provider: GPT_WEB_PROVIDERS.detect(tab.url),
     tab_url: tab.url || "",
     active: Boolean(tab.active),
     window_id: tab.windowId,
@@ -119,15 +120,16 @@ async function focusEditorFromBridge(message, targetId) {
 }
 
 // A file input targets one tab without changing the shared OS clipboard.
-async function uploadImageFile(tabId, imagePath) {
+async function uploadImageFile(tabId, imagePath, provider = "chatgpt") {
   await debuggerAttach(tabId);
   try {
     const probe = await cdpCommand(tabId, "Runtime.evaluate", {
-      expression: `(() => { const editor=${COMPOSER_JS}; const scope=editor?.closest('form') || document; return Array.from(scope.querySelectorAll('input[type="file"]')).find(e => /image/i.test(e.accept)) || Array.from(document.querySelectorAll('input[type="file"]')).find(e => /image/i.test(e.accept)); })()`,
+      expression: provider === "glm" ? `document.querySelector('input.img-input[type="file"]')` : `(() => { const editor=${COMPOSER_JS}; const scope=editor?.closest('form') || document; return Array.from(scope.querySelectorAll('input[type="file"]')).find(e => /image/i.test(e.accept)) || Array.from(document.querySelectorAll('input[type="file"]')).find(e => /image/i.test(e.accept)); })()`,
     });
     const objectId = probe.result?.objectId;
     if (!objectId) throw bridgeError("IMAGE_INPUT_NOT_FOUND", "页面没有图片文件输入入口");
     await cdpCommand(tabId, "DOM.setFileInputFiles", { files: [imagePath], objectId });
+    if (provider === "glm") await cdpCommand(tabId, "Runtime.callFunctionOn", {objectId, functionDeclaration: "function(){const f=this.files?.[0], t=document.querySelector('#search-input-box textarea');if(!f||!t)return false;const d=new DataTransfer();d.items.add(f);return t.dispatchEvent(new ClipboardEvent('paste',{clipboardData:d,bubbles:true,cancelable:true}));}", returnByValue:true});
   } finally {
     await debuggerDetach(tabId);
   }
@@ -143,18 +145,19 @@ async function sendImageFromBridge(message, targetId) {
   try {
     const tab = await getBoundTab(targetId);
     if (!tab) throw bridgeError("CHATGPT_TAB_NOT_FOUND", "请先绑定 ChatGPT 标签页");
+    if (message.provider && GPT_WEB_PROVIDERS.detect(tab.url) !== message.provider) throw bridgeError("PROVIDER_MISMATCH", "目标标签页与请求提供方不一致");
     const response = await sendTaskToPage(tab.id, {
       type: "bridge_task", request_id: requestId,
       conversation_id: String(message.conversation_id || "current"),
-      prompt: String(message.prompt || "请描述这张图片"),
+      prompt: String(message.prompt || ""),
       expected_format: String(message.expected_format || "text"),
       timeout_ms: Number(message.timeout_ms || 600000),
       input_backend: "image", image_path: String(message.image_path || ""),
-      skip_paste: message.skip_paste === true,
+      skip_paste: message.skip_paste === true, upload_only: message.upload_only === true,
     });
     if (!response?.success) throw bridgeError(response?.code || "VISION_SEND_FAILED", response?.message || "图片消息发送失败");
     sendToBridge(targetId, { type: "result", request_id: requestId, target_id: targetId,
-      result: response.result, conversation_id: response.conversation_id, message_id: response.message_id, uploaded_image_count: response.uploaded_image_count });
+      result: response.result, conversation_id: response.conversation_id, message_id: response.message_id, uploaded_image_count: response.uploaded_image_count, stage: response.stage });
   } catch (error) {
     sendToBridge(targetId, { type: "error", request_id: requestId, target_id: targetId,
       code: error.code || "VISION_SEND_FAILED", message: error.detail || error.message || String(error) });
@@ -200,13 +203,20 @@ function normalizeChatGPTDestination(value) {
 async function openTabFromBridge(message, socketTargetId) {
   const replyTarget = socketTargetId || CONTROL_TARGET_ID;
   try {
-    const destination = normalizeChatGPTDestination(message.url);
-    const conversationId = destination.match(/\/c\/([A-Za-z0-9_-]+)$/)?.[1] || "";
+    const provider = String(message.provider || GPT_WEB_PROVIDERS.detect(message.url) || "chatgpt");
+    const destination = GPT_WEB_PROVIDERS.normalize(provider, message.url);
+    const conversationId = GPT_WEB_PROVIDERS.conversationId(provider, destination);
     // Some installs run with no visible window (--no-startup-window), where
     // chrome.tabs.create fails with "No current window". Create a window first.
-    let tab = conversationId ? (await chrome.tabs.query({ url: ["https://chatgpt.com/*", "https://chat.openai.com/*"] })).find((candidate) => {
-      try { return normalizeChatGPTDestination(candidate.url) === destination; } catch (_) { return false; }
-    }) : null;
+    const matchingTabs = conversationId ? (await chrome.tabs.query({ url: ["https://chatgpt.com/*", "https://chat.openai.com/*", "https://chatglm.cn/*"] })).filter((candidate) => {
+      try { return GPT_WEB_PROVIDERS.matches(provider, candidate.url, destination); } catch (_) { return false; }
+    }) : [];
+    let tab = null;
+    for (const candidate of matchingTabs) {
+      if (await pageReady(candidate.id)) { tab = candidate; break; }
+    }
+    // A tab left open across an extension update can have an invalidated content
+    // script. Open the same history URL in a fresh tab without clearing its draft.
     const reused = Boolean(tab);
     if (!tab) {
       try {
@@ -227,7 +237,7 @@ async function openTabFromBridge(message, socketTargetId) {
     }
     const ready = await pageReady(tab.id);
     const current = await chrome.tabs.get(tab.id);
-    if (conversationId && normalizeChatGPTDestination(current.url) !== destination) {
+    if (conversationId && !GPT_WEB_PROVIDERS.matches(provider, current.url, destination)) {
       throw bridgeError("CONVERSATION_URL_MISMATCH", "网页未进入指定历史会话；未绑定或发送新问题");
     }
     if (!ready) throw bridgeError("TARGET_NOT_READY", "ChatGPT 页面未就绪，请检查登录与会话访问权限");
@@ -235,7 +245,7 @@ async function openTabFromBridge(message, socketTargetId) {
     sendToBridge(replyTarget, {
       type: "open_result", request_id: String(message.request_id || ""),
       tab_id: tab.id, target_id: bound.target_id, ready: Boolean(ready), success: true,
-      url: current.url, conversation_id: conversationId, reused,
+      url: current.url, conversation_id: conversationId, provider, reused,
     });
   } catch (error) {
     sendToBridge(replyTarget, {
@@ -249,10 +259,12 @@ async function newChatFromBridge(message, targetId) {
   try {
     const tab = await getBoundTab(targetId);
     if (!tab) throw bridgeError("CHATGPT_TAB_NOT_FOUND", "请先绑定 ChatGPT 标签页");
+    if (message.provider && GPT_WEB_PROVIDERS.detect(tab.url) !== message.provider) throw bridgeError("PROVIDER_MISMATCH", "目标标签页与请求提供方不一致");
     const response = await sendTaskToPage(tab.id, { type: "bridge_new_chat" });
+    if (!response?.success) throw bridgeError(response?.code || "NEW_CHAT_FAILED", response?.message || "新会话失败");
     sendToBridge(targetId, {
       type: "new_chat_result", request_id: String(message.request_id || ""), target_id: targetId,
-      conversation_id: response?.conversation_id || "", is_new_chat: Boolean(response?.success && response?.already), success: true,
+      conversation_id: response?.conversation_id || "", is_new_chat: Boolean(response?.success), success: true,
     });
   } catch (error) {
     sendToBridge(targetId, {
@@ -266,6 +278,7 @@ async function checkStateFromBridge(message, targetId) {
   try {
     const tab = await getBoundTab(targetId);
     if (!tab) throw bridgeError("CHATGPT_TAB_NOT_FOUND", "请先绑定 ChatGPT 标签页");
+    if (message.provider && GPT_WEB_PROVIDERS.detect(tab.url) !== message.provider) throw bridgeError("PROVIDER_MISMATCH", "目标标签页与请求提供方不一致");
     const response = await sendTaskToPage(tab.id, { type: "bridge_check_state", prompt: String(message.prompt || "") });
     sendToBridge(targetId, {
       type: "state_result", request_id: String(message.request_id || ""), target_id: targetId, state: response || {}, success: true,
@@ -395,6 +408,8 @@ async function pageState(tabId) {
       generating: Boolean(state?.generating),
       conversation_title: String(state?.conversation_title || ""),
       url: String(state?.url || ""),
+      provider: String(state?.provider || ""),
+      conversation_id: String(state?.conversation_id || ""),
     };
   } catch (_) {
     return { ready: false, generating: false, conversation_title: "", url: "" };
@@ -416,6 +431,8 @@ async function sendStatus(targetId, type = "status") {
     tab_id: tab?.id || null,
     tab_title: tab?.title || "",
     tab_url: tab?.url || "",
+    provider: GPT_WEB_PROVIDERS.detect(tab?.url),
+    conversation_id: page.conversation_id || (tab ? GPT_WEB_PROVIDERS.conversationId(GPT_WEB_PROVIDERS.detect(tab.url), tab.url) : ""),
     target_id: targetId,
     browser: browser.name,
     browser_version: browser.version,
@@ -434,10 +451,11 @@ async function runTask(message, socketTargetId) {
   try {
     const tab = await getBoundTab(targetId);
     if (!tab) throw bridgeError("CHATGPT_TAB_NOT_FOUND", "请先绑定 ChatGPT 标签页");
+    if (message.provider && GPT_WEB_PROVIDERS.detect(tab.url) !== message.provider) throw bridgeError("PROVIDER_MISMATCH", "目标标签页与请求提供方不一致");
     const backend = String(message.input_backend || "cdp");
     let inputDiag = "";
-    let inputBackend = backend;
-    if (backend === "cdp") {
+    let inputBackend = GPT_WEB_PROVIDERS.detect(tab.url) === "glm" ? "dom" : backend;
+    if (backend === "cdp" && inputBackend === "cdp") {
       try {
         await cdpTypeAndEnter(tab.id, String(message.prompt || ""));
         sendToBridge(targetId, { type: "progress", request_id: message.request_id, stage: "INPUT_SENT", detail: JSON.stringify(cdpLastLog || {}) });
@@ -493,6 +511,7 @@ async function syncPage(message, targetId) {
   try {
     const tab = await getBoundTab(targetId);
     if (!tab) throw bridgeError("CHATGPT_TAB_NOT_FOUND", "请先绑定 ChatGPT 标签页");
+    if (message.provider && GPT_WEB_PROVIDERS.detect(tab.url) !== message.provider) throw bridgeError("PROVIDER_MISMATCH", "目标标签页与请求提供方不一致");
     const response = await sendTaskToPage(tab.id, { type: "bridge_sync", conversation_id: String(message.conversation_id || "current") });
     if (!response?.success) throw bridgeError(response?.code || "SYNC_FAILED", response?.message || "页面同步失败");
     sendToBridge(targetId, { type: "sync_result", request_id: String(message.request_id || ""), target_id: targetId, conversation_id: response.conversation_id, messages: response.messages || [] });
@@ -626,12 +645,35 @@ async function cdpTypeAndEnter(tabId, text) {
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   (async () => {
+    if (message.type === "bridge_glm_click_send") {
+      const targetId = targetIdForTab(sender.tab?.id);
+      if (!targetId || activeRequests.get(targetId) !== String(message.request_id) || GPT_WEB_PROVIDERS.detect(sender.tab.url) !== "glm") throw bridgeError("REQUEST_NOT_ACTIVE", "发送操作没有对应活动 GLM 任务");
+      await debuggerAttach(sender.tab.id);
+      try {
+        await ensureWindowForeground(sender.tab.id);
+        const action = String(message.action || "send");
+        if (!["send", "default_image", "stop"].includes(action)) throw bridgeError("INVALID_ACTION", "无效的 GLM 点击操作");
+        const expression = action === "stop"
+          ? String.raw`(() => {const n=document.querySelector('.enter-icon-container .enter_icon');const s=n?.getAttribute('src')||'';if(!s.startsWith('data:image/svg+xml;base64,'))return null;const x=atob(s.split(',')[1]);if(!/<rect\b[^>]*\bx="10"[^>]*\by="10"[^>]*\bwidth="12"[^>]*\bheight="12"/.test(x))return null;const r=n.getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2,w:r.width,h:r.height};})()`
+          : action === "send" ? `(() => {const n=document.querySelector('.enter-icon-container:not(.empty)'); if(!n)return null;const r=n.getBoundingClientRect(); return {x:r.x+r.width/2,y:r.y+r.height/2,w:r.width,h:r.height};})()`
+          : `(() => {const nodes=Array.from(document.querySelectorAll('.search-box-container *'));const n=nodes.find(e=>e.children.length===0 && e.textContent.trim()==='这是什么' && e.getBoundingClientRect().width>0 && e.getBoundingClientRect().height>0);if(!n)return null;const r=n.getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2,w:r.width,h:r.height};})()`;
+        const probe = await cdpCommand(sender.tab.id, "Runtime.evaluate", {expression, returnByValue:true});
+        const pt=probe.result?.value; if(!pt || !pt.w || !pt.h) throw bridgeError("SEND_BUTTON_UNAVAILABLE", "GLM 发送控件不可用");
+        try {
+          await cdpCommand(sender.tab.id, "Input.dispatchMouseEvent", {type:"mousePressed",x:pt.x,y:pt.y,button:"left",clickCount:1});
+          await cdpCommand(sender.tab.id, "Input.dispatchMouseEvent", {type:"mouseReleased",x:pt.x,y:pt.y,button:"left",clickCount:1});
+        } catch (error) { throw bridgeError("DELIVERY_UNCERTAIN", "发送操作结果未知，请查询原任务，禁止自动重发"); }
+        sendResponse({success:true});
+      } finally { await debuggerDetach(sender.tab.id); }
+      return;
+    }
+
     if (message.type === "bridge_upload_image") {
       const targetId = targetIdForTab(sender.tab?.id);
       if (!targetId || activeRequests.get(targetId) !== String(message.request_id)) {
         throw bridgeError("REQUEST_NOT_ACTIVE", "图片上传没有对应活动任务");
       }
-      await uploadImageFile(sender.tab.id, String(message.image_path || ""));
+      await uploadImageFile(sender.tab.id, String(message.image_path || ""), GPT_WEB_PROVIDERS.detect(sender.tab.url));
       sendResponse({ success: true });
       return;
     }

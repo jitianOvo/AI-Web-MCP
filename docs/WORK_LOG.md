@@ -126,3 +126,7 @@
 
 ## 2026-11-03 v0.1.32 恢复
 恢复 Edge 文本与图片闭环，加入指定历史URL复用与目标注册等待；重建图标和桌面快捷方式，同步 Codex/ZCode 技能。ZCode APP 由 6.1 Terra 操作，文本和图片实测通过。Python57项、Node13项通过。详见 [恢复验收记录](RELEASES.md)。
+
+## 2026-11-04 AI-Web-MCP 1.1.0
+
+新增GLM网页对话、图片与分步上传，保留ChatGPT兼容入口。统一MCP/CLI/provider目标规则，迁移模块与程序品牌，统一技能安装到本地Agent。详见 [版本记录](RELEASES.md) 与 [架构](ARCHITECTURE.md)。真实会话证据仅留本机data目录。

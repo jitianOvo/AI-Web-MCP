@@ -15,6 +15,7 @@ function load(file, overrides = {}) {
       tabs: { onUpdated: { addListener() {} }, onRemoved: { addListener() {} }, onCreated: { addListener() {} } },
       alarms: { onAlarm: { addListener() {} } } }, ...overrides };
   vm.createContext(context);
+  if (file === 'background.js') vm.runInContext(fs.readFileSync(path.join(__dirname, '../extension/providers.js'), 'utf8'), context);
   if (file === 'content.js') vm.runInContext(fs.readFileSync(path.join(__dirname, '../extension/selectors.js'), 'utf8'), context);
   vm.runInContext(fs.readFileSync(path.join(__dirname, '../extension', file), 'utf8'), context);
   return context;
@@ -136,4 +137,25 @@ test('history URL opening creates missing chat at given URL and fails on redirec
   await c.openTabFromBridge({url, request_id: 'open-old'}, 'unbound');
   assert.equal(reply.code, 'CONVERSATION_URL_MISMATCH');
   assert.equal(bindings, 0);
+});
+
+
+test('history selection skips stale content scripts without reloading existing drafts', async () => {
+  const c = load('background.js');
+  const url = 'https://chatgpt.com/c/old-123';
+  const stale = {id: 7, windowId: 3, url, status: 'complete'};
+  const ready = {...stale, id: 8};
+  c.chrome.tabs.query = async () => [stale, ready];
+  c.chrome.tabs.get = async () => ready;
+  c.chrome.tabs.create = async () => {throw new Error('must reuse ready history tab');};
+  c.chrome.tabs.reload = async () => {throw new Error('must preserve existing drafts');};
+  c.chrome.tabs.update = async () => {};
+  c.chrome.windows = {update: async () => {}};
+  c.pageReady = async id => id === 8;
+  c.bindSpecificTab = async id => ({target_id: `tab-${id}`});
+  let reply;
+  c.sendToBridge = (target, message) => {reply = message;};
+  await c.openTabFromBridge({url, request_id: 'open-old'}, 'unbound');
+  assert.equal(reply.tab_id, 8);
+  assert.equal(reply.reused, true);
 });

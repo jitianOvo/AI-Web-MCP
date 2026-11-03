@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import re
 import subprocess
@@ -16,6 +17,9 @@ from pathlib import Path
 from typing import Any
 
 from .config import PROJECT_ROOT, load_config
+from .providers import (canonical_provider, detect_provider, normalize_ai_url,
+                        conversation_id_from_url, conversation_urls_match, list_provider_capabilities)
+from .protocol import new_request_id
 
 
 _START_LOCK = threading.Lock()
@@ -69,8 +73,8 @@ class BridgeClient:
             except Exception:
                 result = {"error": {"code": "BRIDGE_HTTP_ERROR", "message": str(error)}}
         except (urllib.error.URLError, TimeoutError, OSError) as error:
-            if method == "POST" and path == "/api/chat/send-image":
-                raise BridgeError("DELIVERY_UNCERTAIN", "图片请求响应未收到，请查询原 request_id，禁止自动重复发送", str((payload or {}).get("request_id", ""))) from error
+            if method == "POST" and path in {"/api/chat/send-image", "/api/chat/send"}:
+                raise BridgeError("DELIVERY_UNCERTAIN", "请求响应未收到，请查询原 request_id，禁止自动重复发送", str((payload or {}).get("request_id", ""))) from error
             raise BridgeError("BRIDGE_OFFLINE", f"本地 Bridge 未响应：{error}") from error
         if not result.get("success", False):
             detail = result.get("error") or {}
@@ -82,6 +86,109 @@ class BridgeClient:
 
     def tabs(self) -> dict[str, Any]:
         return self._request("GET", "/api/tabs")
+
+    def list_ai_providers(self) -> dict[str, Any]:
+        return {"success": True, "providers": list_provider_capabilities()}
+
+    def list_ai_tabs(self, provider: str = "") -> dict[str, Any]:
+        try:
+            provider = canonical_provider(provider, allow_empty=True)
+        except ValueError as error:
+            raise BridgeError("INVALID_PROVIDER", str(error)) from error
+        return self._request("GET", "/api/tabs?" + urllib.parse.urlencode({"provider": provider}))
+
+    def select_ai_target(self, provider: str = "", target_id: str = "") -> dict[str, Any]:
+        try:
+            provider = canonical_provider(provider, allow_empty=True)
+        except ValueError as error:
+            raise BridgeError("INVALID_PROVIDER", str(error)) from error
+        candidates = [target for target in self.status().get("targets", [])
+                      if target.get("connected", True) and target.get("tab_bound") and target.get("page_ready")]
+        if target_id:
+            candidates = [target for target in candidates if target.get("target_id") == target_id]
+            if not candidates:
+                raise BridgeError("TARGET_NOT_READY", "指定目标未就绪")
+        elif provider:
+            candidates = [target for target in candidates if self._target_provider(target) == provider]
+        if len(candidates) != 1:
+            raise BridgeError("TARGET_REQUIRED" if candidates else "NO_READY_TARGET",
+                              "有多个就绪目标，请指定 target_id" if candidates else "没有匹配的就绪目标")
+        if provider and self._target_provider(candidates[0]) != provider:
+            raise BridgeError("PROVIDER_MISMATCH", "指定目标与提供方不一致")
+        return {**candidates[0], "provider": self._target_provider(candidates[0])}
+
+    @staticmethod
+    def _target_provider(target: dict[str, Any]) -> str:
+        return str(target.get("provider") or detect_provider(str(target.get("tab_url", ""))) or "chatgpt")
+
+    def open_ai_chat(self, provider: str = "chatgpt", url: str = "", new_chat: bool = False) -> dict[str, Any]:
+        try:
+            provider = canonical_provider(provider)
+            destination = normalize_ai_url(provider, url)
+        except ValueError as error:
+            raise BridgeError("INVALID_AI_URL", str(error)) from error
+        result = self._request("POST", "/api/tabs/open", {"provider": provider, "url": destination}, timeout=60)
+        expected_id = conversation_id_from_url(provider, destination)
+        if expected_id and (not conversation_urls_match(provider, str(result.get("url", "")), destination)
+                            or result.get("conversation_id") != expected_id):
+            raise BridgeError("CONVERSATION_URL_MISMATCH", "扩展未确认指定会话", str(result.get("request_id", "")))
+        if new_chat:
+            state = self._request("POST", "/api/chat/new", {"provider": provider, "target_id": result.get("target_id", "")}, timeout=35)
+            result.update(state)
+            result["url"] = str(state.get("url") or normalize_ai_url(provider))
+            result["conversation_id"] = str(state.get("conversation_id") or "")
+            result["reused"] = False
+            result["new_chat"] = True
+        return result
+
+    def _send_ai(self, content: str, *, provider: str = "", target_id: str = "", request_id: str = "",
+                 timeout_ms: int = 600000, image_path: str = "", operation: str = "text") -> dict[str, Any]:
+        target = self.select_ai_target(provider, target_id)
+        actual_provider = target["provider"]
+        conversation_id = str(target.get("conversation_id") or "")
+        try:
+            if target.get("tab_url"):
+                conversation_id = conversation_id_from_url(actual_provider, target["tab_url"]) or conversation_id
+        except ValueError:
+            pass
+        conversation_id = conversation_id or "current"
+        payload = {"provider": actual_provider, "target_id": target["target_id"], "conversation_id": conversation_id,
+                   "request_id": request_id, "timeout_ms": timeout_ms, "expected_format": "text"}
+        if operation == "text":
+            payload.update(content=content, request_id=request_id or new_request_id("ai"))
+            endpoint = "/api/chat/send"
+        else:
+            digest = "existing-attachment:" + str(target.get("attachment_revision", ""))
+            if operation != "send_attachments":
+                image = Path(image_path).expanduser().resolve()
+                if not image.is_file():
+                    raise BridgeError("IMAGE_NOT_FOUND", f"图片不存在：{image}", request_id)
+                digest = hashlib.sha256(image.read_bytes()).hexdigest()
+                image_path = str(image)
+            fingerprint = hashlib.sha256(json.dumps(
+                [actual_provider, target["target_id"], conversation_id if conversation_id != "current" else "current:" + str(target.get("conversation_generation", 0)), operation, digest, content, "text"],
+                ensure_ascii=False, separators=(",", ":"),
+            ).encode("utf-8")).hexdigest()
+            automatic_id = new_request_id("img") if operation in {"send_attachments", "upload_image"} else "img_" + fingerprint
+            payload.update(prompt=content, image_path=image_path, request_id=request_id or automatic_id,
+                           skip_paste=operation == "send_attachments", upload_only=operation == "upload_image")
+            endpoint = "/api/chat/send-image"
+        return self._request("POST", endpoint, payload, timeout=timeout_ms / 1000 + 20)
+
+    def ask_ai(self, question: str, provider: str = "", target_id: str = "", request_id: str = "", timeout_ms: int = 600000) -> dict[str, Any]:
+        return self._send_ai(question, provider=provider, target_id=target_id, request_id=request_id, timeout_ms=timeout_ms)
+
+    def ask_ai_image(self, image_path: str, question: str = "请描述这张图片", provider: str = "", target_id: str = "", request_id: str = "", timeout_ms: int = 600000) -> dict[str, Any]:
+        return self._send_ai(question, provider=provider, target_id=target_id, request_id=request_id,
+                             timeout_ms=timeout_ms, image_path=image_path, operation="vision")
+
+    def upload_ai_image(self, image_path: str, target_id: str, request_id: str = "", timeout_ms: int = 600000) -> dict[str, Any]:
+        return self._send_ai("", target_id=target_id, request_id=request_id, timeout_ms=timeout_ms,
+                             image_path=image_path, operation="upload_image")
+
+    def send_ai_message(self, content: str, target_id: str, use_attachments: bool = False, request_id: str = "", timeout_ms: int = 600000) -> dict[str, Any]:
+        return self._send_ai(content, target_id=target_id, request_id=request_id, timeout_ms=timeout_ms,
+                             operation="send_attachments" if use_attachments else "text")
 
     def bind_tab(self, tab_id: int) -> dict[str, Any]:
         return self._request("POST", "/api/tabs/bind", {"tab_id": int(tab_id)}, timeout=15)
@@ -161,7 +268,7 @@ class BridgeClient:
             source_path = str(PROJECT_ROOT / "src")
             environment["PYTHONPATH"] = source_path + os.pathsep + environment.get("PYTHONPATH", "")
             subprocess.Popen(
-                [sys.executable, "-m", "gpt_web_mcp.bridge"],
+                [sys.executable, "-m", "ai_web_mcp.bridge"],
                 cwd=str(PROJECT_ROOT), stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                 env=environment,

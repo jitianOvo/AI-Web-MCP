@@ -6,8 +6,8 @@ from pathlib import Path
 import tempfile
 import json
 
-from gpt_web_mcp.agent_cli import main, select_target
-from gpt_web_mcp.client import BridgeError
+from ai_web_mcp.agent_cli import main, select_target
+from ai_web_mcp.client import BridgeError
 
 
 class AgentCliTests(unittest.TestCase):
@@ -15,7 +15,7 @@ class AgentCliTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             image = Path(directory) / "image.png"
             image.write_bytes(b"image")
-            with patch("gpt_web_mcp.agent_cli.BridgeClient") as factory, redirect_stdout(StringIO()):
+            with patch("ai_web_mcp.agent_cli.BridgeClient") as factory, redirect_stdout(StringIO()):
                 client = factory.return_value
                 client.open_conversation.return_value = {"target_id": "history"}
                 client.status.return_value = {"targets": [{"target_id": "history", "tab_bound": True, "page_ready": True}]}
@@ -38,7 +38,7 @@ class AgentCliTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             image = Path(directory) / "image.png"
             image.write_bytes(b"image")
-            with patch("gpt_web_mcp.agent_cli.BridgeClient") as factory, redirect_stdout(StringIO()) as output:
+            with patch("ai_web_mcp.agent_cli.BridgeClient") as factory, redirect_stdout(StringIO()) as output:
                 client = factory.return_value
                 client.status.return_value = {"targets": [{"target_id": "t", "tab_bound": True, "page_ready": True}]}
                 client.send_image.side_effect = BridgeError("DELIVERY_UNCERTAIN", "port closed", "original")
@@ -47,7 +47,7 @@ class AgentCliTests(unittest.TestCase):
                 self.assertEqual(json.loads(output.getvalue())["request_id"], "original")
 
     def test_doctor_and_task_never_send(self):
-        with patch("gpt_web_mcp.agent_cli.BridgeClient") as factory, redirect_stdout(StringIO()):
+        with patch("ai_web_mcp.agent_cli.BridgeClient") as factory, redirect_stdout(StringIO()):
             client = factory.return_value
             client.status.return_value = {"targets": []}
             client.task_status.return_value = {"success": True, "task": {"state": "completed"}}
@@ -59,7 +59,7 @@ class AgentCliTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             image = Path(directory) / "image.png"
             image.write_bytes(b"image")
-            with patch("gpt_web_mcp.agent_cli.BridgeClient") as factory:
+            with patch("ai_web_mcp.agent_cli.BridgeClient") as factory:
                 client = factory.return_value
                 client.status.return_value = {"targets": [{"target_id": "t", "tab_bound": True, "page_ready": True}]}
                 client.send_image.side_effect = BridgeError("DELIVERY_UNCERTAIN", "port closed")

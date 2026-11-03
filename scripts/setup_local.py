@@ -13,7 +13,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 from configure_extension import main as configure_extension  # noqa: E402
 from generate_codex_config import main as generate_codex_config  # noqa: E402
 from validate_installation import main as validate_installation  # noqa: E402
-from gpt_web_mcp.config import load_config  # noqa: E402
+from ai_web_mcp.config import load_config  # noqa: E402
 
 
 def main() -> int:

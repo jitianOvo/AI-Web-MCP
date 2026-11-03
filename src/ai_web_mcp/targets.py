@@ -6,6 +6,14 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
+from .providers import canonical_provider, detect_provider
+
+
+class TargetSelectionError(ValueError):
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
+
 
 @dataclass
 class TargetConnection:
@@ -46,6 +54,7 @@ class TargetRegistry:
             self.target_to_connection.pop(old_target_id, None)
         connection.target_id = target_id
         connection.state = {
+            "provider": str(payload.get("provider") or detect_provider(str(payload.get("tab_url", ""))) or "chatgpt"),
             "browser": str(payload.get("browser", "chromium")),
             "browser_version": str(payload.get("browser_version", "")),
             "tab_bound": bool(payload.get("tab_bound")),
@@ -93,6 +102,24 @@ class TargetRegistry:
             if connection.target_id in {"unbound", "bound-tab"}:
                 return connection
         return next(iter(self.connections.values()), None)
+
+    def select(self, target_id: str = "", provider: str = "", *, strict_provider: bool = False) -> TargetConnection:
+        """Explicit target wins; an unspecified target must have exactly one match."""
+        provider = canonical_provider(provider, allow_empty=True)
+        if target_id:
+            connection = self.get(target_id)
+            if not connection or not self.is_ready(connection) or connection.websocket.closed:
+                raise TargetSelectionError("TARGET_NOT_READY", "指定目标未就绪")
+            if strict_provider and provider and connection.state.get("provider", "chatgpt") != provider:
+                raise TargetSelectionError("PROVIDER_MISMATCH", "指定目标不属于请求的提供方")
+            return connection
+        candidates = [c for c in self.connections.values() if self.is_ready(c) and not c.websocket.closed
+                      and (not provider or c.state.get("provider", "chatgpt") == provider)]
+        if len(candidates) > 1:
+            raise TargetSelectionError("TARGET_REQUIRED", "有多个就绪目标，请指定 target_id：" + ", ".join(c.target_id for c in candidates))
+        if not candidates:
+            raise TargetSelectionError("NO_READY_TARGET", "没有匹配的就绪目标")
+        return candidates[0]
 
     @staticmethod
     def is_ready(connection: TargetConnection) -> bool:

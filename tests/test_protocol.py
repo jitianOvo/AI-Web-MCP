@@ -1,6 +1,6 @@
 import unittest
 
-from gpt_web_mcp.protocol import make_message, text_hash
+from ai_web_mcp.protocol import make_message, text_hash
 
 
 class ProtocolTests(unittest.TestCase):

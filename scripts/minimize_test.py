@@ -60,7 +60,7 @@ def is_minimized(hwnd: int) -> bool:
 
 
 def main() -> int:
-    from gpt_web_mcp.client import BridgeClient  # noqa: E402
+    from ai_web_mcp.client import BridgeClient  # noqa: E402
 
     client = BridgeClient(timeout=120)
     client.ensure_running()
