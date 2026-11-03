@@ -22,6 +22,7 @@ def run(label: str, command: list[str], env: dict[str, str] | None = None) -> No
 def main() -> int:
     environment = os.environ.copy()
     environment["PYTHONPATH"] = str(ROOT / "src") + os.pathsep + environment.get("PYTHONPATH", "")
+    run("version consistency", [str(PYTHON), "scripts/bump_version.py", "--check"], environment)
     run("python tests", [str(PYTHON), "-m", "unittest", "discover", "-s", "tests", "-q"], environment)
     run("compileall", [str(PYTHON), "-m", "compileall", "-q", "src", "scripts"], environment)
     run("installation validation", [str(PYTHON), "scripts/validate_installation.py"], environment)
@@ -32,6 +33,7 @@ def main() -> int:
     run("build cleanup preview", [str(PYTHON), "scripts/clean_build.py"], environment)
     for script in ("background.js", "content.js", "popup.js"):
         run(f"node check {script}", ["node", "--check", f"extension/{script}"], environment)
+    run("extension regressions", ["node", "--test", "tests/vision_extension.test.cjs", "tests/protocol_capture.test.cjs"], environment)
     run("extension protocol fixture", [str(PYTHON), "scripts/replay_extension_fixture.py"], environment)
     print("release_check=passed")
     return 0

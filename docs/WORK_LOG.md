@@ -123,3 +123,6 @@
 - API Key 来源：`OPENAI_API_KEY` 环境变量或 `config/api_key.local.json`（gitignore）；日志只输出 `API backend configured`；状态页/托盘展示 `backend` 字段。
 - `stress_ask.py` 改走 `ask` 并分项统计 UI 成功率 / API 成功率 / fallback 次数 / 超时 / 平均耗时；当前自动化测试 45 项通过。
 - 待外部条件：配置官方 API Key 后即可实测 API 后端与 auto fallback 完整链路。
+
+## 2026-11-03 v0.1.32 恢复
+恢复 Edge 文本与图片闭环，加入指定历史URL复用与目标注册等待；重建图标和桌面快捷方式，同步 Codex/ZCode 技能。ZCode APP 由 6.1 Terra 操作，文本和图片实测通过。Python57项、Node13项通过。详见 [恢复验收记录](RELEASES.md)。

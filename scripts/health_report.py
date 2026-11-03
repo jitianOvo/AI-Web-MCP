@@ -15,6 +15,8 @@ from gpt_web_mcp.config import load_config, resolve_project_path  # noqa: E402
 
 
 def main() -> int:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     config = load_config()
     bridge = BridgeClient()
     try:

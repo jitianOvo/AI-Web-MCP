@@ -38,6 +38,7 @@ function roleFromNode(node) {
     : node.querySelector?.("[data-message-author-role]");
   const explicit = roleNode?.getAttribute("data-message-author-role");
   if (explicit) return explicit;
+  if (node.matches?.("[data-chatgpt-selection-message-id]")) return "assistant";
   const marker = `${node.getAttribute?.("data-testid") || ""} ${node.getAttribute?.("aria-label") || ""} ${String(node.className || "")}`.toLowerCase();
   if (marker.includes("user")) return "user";
   if (marker.includes("assistant") || marker.includes("conversation-turn")) return "assistant";
@@ -146,21 +147,66 @@ async function startNewChat() {
   throw bridgeError("NEW_CHAT_TIMEOUT", "进入新聊天超时");
 }
 
-async function waitForUserMessage(prompt, timeoutMs = 10000) {
-  const norm = (value) => String(value || "").replace(/\s+/g, " ").trim();
-  const needle = norm(String(prompt || "").slice(0, 600));
-  const loose = !needle;  // no prompt -> any user message counts
+function userMessageSnapshot() {
+  return new Set(messageNodes().filter(n => roleFromNode(n) === "user")
+    .map(n => messageFromNode(n)?.message_id).filter(Boolean));
+}
+
+function userAttachmentCount(node) {
+  let scope = node;
+  for (let index = 0, parent = node.parentElement; parent && index < 6; index++, parent = parent.parentElement) {
+    if (String(parent.className || "").includes("group/user-message")) scope = parent;
+  }
+  return scope.querySelectorAll("img").length;
+}
+
+async function waitForUserMessage(prompt, timeoutMs = 10000, baseline = new Set()) {
+  const norm = value => String(value || "").replace(/\s+/g, " ").trim();
+  const needle = norm(prompt);
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    const userNodes = messageNodes().filter((node) => roleFromNode(node) === "user");
-    for (const node of userNodes) {
-      const text = cleanText(node);
-      if (text && norm(text).includes(needle)) return true;
+    if (activeRequestId && cancelledRequestId === activeRequestId) throw bridgeError("REQUEST_CANCELLED", "请求已取消");
+    for (const node of messageNodes().filter(n => roleFromNode(n) === "user")) {
+      const message = messageFromNode(node);
+      if (message && !baseline.has(message.message_id) && (!needle || norm(message.content).includes(needle))) return true;
     }
-    if (loose && userNodes.some((node) => cleanText(node))) return true;
     await delay(200);
   }
   return false;
+}
+
+function composerImageState() {
+  const input = firstMatch(GPT_WEB_SELECTORS.input);
+  const scope = input?.closest("form") || input?.closest("#composer-background") || input?.parentElement;
+  const images = scope ? Array.from(scope.querySelectorAll("img"))
+    .filter(n => !n.closest("button") && !/avatar|emoji|icon/i.test(n.className || "")) : [];
+  const uploading = Boolean(scope?.querySelector("[role='progressbar'], [aria-busy='true'], [data-state='uploading'], [class*='uploading']"));
+  return { image_count: images.length, uploading, ready: images.length > 0 && !uploading,
+    text_length: inputValue(input).length, has_content: images.length > 0 || Boolean(inputValue(input).trim()) };
+}
+
+async function prepareImage(message, input) {
+  const initial = composerImageState();
+  if (message.skip_paste !== true) {
+    if (initial.has_content || initial.uploading) throw bridgeError("COMPOSER_NOT_EMPTY", "输入框已有草稿或图片；请处理后再提交新图片任务");
+    progress(activeRequestId, "VISION_UPLOAD");
+    const uploaded = await chrome.runtime.sendMessage({ type: "bridge_upload_image",
+      request_id: activeRequestId, image_path: message.image_path });
+    if (!uploaded?.success) throw bridgeError(uploaded?.code || "IMAGE_UPLOAD_FAILED", uploaded?.message || "图片上传失败");
+  } else if (!initial.image_count) {
+    throw bridgeError("IMAGE_NOT_ATTACHED", "输入框没有已有图片");
+  }
+  const deadline = Date.now() + Math.min(120000, Number(message.timeout_ms || 600000));
+  while (Date.now() < deadline) {
+    if (cancelledRequestId === activeRequestId) throw bridgeError("REQUEST_CANCELLED", "请求已取消");
+    if (composerImageState().ready) {
+      if (!await setPromptVerified(input, String(message.prompt || ""))) throw bridgeError("INPUT_WRITE_FAILED", "图片问题写入失败");
+      progress(activeRequestId, "VISION_UPLOADED");
+      return composerImageState().image_count;
+    }
+    await delay(250);
+  }
+  throw bridgeError("IMAGE_UPLOAD_TIMEOUT", "图片上传未确认，未发送问题；请检查原任务与输入框");
 }
 
 function emitNewMessages() {
@@ -277,7 +323,6 @@ async function clickSend() {
 
 function clickSendWithFallback() {
   const input = firstMatch(GPT_WEB_SELECTORS.input);
-  if (pressEnterToSend(input)) return true;
   const button = firstMatch(GPT_WEB_SELECTORS.sendButton);
   if (button && !button.disabled && button.getAttribute("aria-disabled") !== "true") { button.click(); return true; }
   const form = input?.closest?.("form");
@@ -298,14 +343,21 @@ function pressEnterToSend(input, ctrl = false) {
   input.dispatchEvent(new KeyboardEvent("keyup", options));
   return true;
 }
+function answerSnapshot() {
+  return new Set(answerNodes().map(node => messageFromNode(node)?.message_id).filter(Boolean));
+}
+
 async function waitForAnswer(requestId, baselineCount, timeoutMs) {
   const deadline = Date.now() + timeoutMs;
   let lastText = "";
   let stableSince = 0;
   while (Date.now() < deadline) {
     if (cancelledRequestId === requestId) throw bridgeError("REQUEST_CANCELLED", "请求已取消");
-    const messages = answerNodes();
-    if (messages.length > baselineCount) {
+    const messages = answerNodes().filter(node => {
+      const message = messageFromNode(node);
+      return message && !(baselineCount instanceof Set && baselineCount.has(message.message_id));
+    });
+    if (messages.length && (baselineCount instanceof Set || messages.length > baselineCount)) {
       const text = cleanText(messages[messages.length - 1]);
       if (text !== lastText) { lastText = text; stableSince = Date.now(); }
       const generating = Boolean(firstMatch(GPT_WEB_SELECTORS.stopButton));
@@ -316,7 +368,6 @@ async function waitForAnswer(requestId, baselineCount, timeoutMs) {
         progress(requestId, "STABILIZING");
         return lastText;
       }
-      if (lastText && Date.now() - stableSince >= 8000) { progress(requestId, "STABILIZING"); return lastText; }
     }
     await delay(300);
   }
@@ -345,10 +396,14 @@ async function executeTask(message) {
     progress(requestId, "CREATED");
     const input = await waitForInput();
     progress(requestId, "INPUT_READY");
+    if (firstMatch(GPT_WEB_SELECTORS.stopButton)) throw bridgeError("PAGE_GENERATING", "页面仍在生成上一条回答");
+    const userBaseline = userMessageSnapshot();
+    const responseBaseline = answerSnapshot();
+    const uploadedImageCount = String(message.input_backend) === "image" ? await prepareImage(message, input) : 0;
     if (["cdp", "verify"].includes(String(message.input_backend || ""))) {
       progress(requestId, "INPUT_SENT");
-      const baselineCount = answerNodes().length;
-      const acked = await waitForUserMessage(String(message.prompt || ""), 15000);
+      const baselineCount = responseBaseline;
+      const acked = await waitForUserMessage(String(message.prompt || ""), 15000, userBaseline);
       if (!acked) throw bridgeError("SEND_FAILED", "用户消息未在页面确认上屏; cdp=true");
       progress(requestId, "USER_MESSAGE_CONFIRMED");
       const result = await waitForAnswer(requestId, baselineCount, Number(message.timeout_ms || 600000));
@@ -358,12 +413,12 @@ async function executeTask(message) {
       await flushBufferedMessages();
       return { success: true, result, conversation_id: conversationId(), message_id: lastMessage?.message_id || `assistant-${Date.now()}` };
     }
-    if (String(message.input_backend) === "send_only") {
+    if (["send_only", "image"].includes(String(message.input_backend))) {
       progress(requestId, "INPUT_SENT");
-      const baselineCount = answerNodes().length;
+      const baselineCount = responseBaseline;
       await clickSend();
       progress(requestId, "SEND_CLICKED");
-      const acked = await waitForUserMessage(String(message.prompt || ""), 15000);
+      const acked = await waitForUserMessage(String(message.prompt || ""), 15000, userBaseline);
       if (!acked) throw bridgeError("SEND_FAILED", "用户消息未在页面确认上屏; send_only=true");
       progress(requestId, "USER_MESSAGE_CONFIRMED");
       const result = await waitForAnswer(requestId, baselineCount, Number(message.timeout_ms || 600000));
@@ -371,9 +426,9 @@ async function executeTask(message) {
       const lastMessage = assistantNodes.length ? messageFromNode(assistantNodes[assistantNodes.length - 1]) : null;
       progress(requestId, "COMPLETED");
       await flushBufferedMessages();
-      return { success: true, result, conversation_id: conversationId(), message_id: lastMessage?.message_id || `assistant-${Date.now()}` };
+      return { success: true, result, conversation_id: conversationId(), message_id: lastMessage?.message_id || `assistant-${Date.now()}`, uploaded_image_count: uploadedImageCount };
     }
-    const baselineCount = answerNodes().length;
+    const baselineCount = responseBaseline;
     const written = await setPromptVerified(input, String(message.prompt || ""));
     if (!written) throw bridgeError("INPUT_WRITE_FAILED", "内容未能写入输入框");
     await delay(250);
@@ -401,13 +456,13 @@ async function executeTask(message) {
     for (const method of sendMethods) {
       const fired = method.run();
       progress(requestId, "SUBMITTED");
-      if (fired) acked = await waitForUserMessage(promptText, 3000);
+      if (fired) acked = await waitForUserMessage(promptText, 15000, userBaseline);
       attempts.push({ method: method.name, fired, input_text_after: inputValue(input), url_after: location.href });
-      if (acked) break;
+      if (acked || fired) break;
     }
     if (!acked) {
       const sentByClear = inputValue(input) === "" && attempts.some((item) => item.fired);
-      if (sentByClear) acked = await waitForUserMessage(promptText, 4000);
+      if (sentByClear) acked = await waitForUserMessage(promptText, 4000, userBaseline);
       if (!acked) {
         const snapshot = JSON.stringify({ editor_text_before_send: editorTextBeforeSend, send_button_html: sendButtonHtml, pre_buttons: preButtons, attempts, form_buttons: formButtonsSnapshot(), user_nodes: messageNodes().filter((n) => roleFromNode(n) === "user").length, answer_nodes: answerNodes().length, url: location.href });
         throw bridgeError("SEND_FAILED", "用户消息未在页面确认上屏; snapshot=" + snapshot);
@@ -484,7 +539,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     const userNodes = nodes.filter((node) => roleFromNode(node) === "user");
     const assistantNodes = answerNodes();
     const lastAssistant = assistantNodes.length ? cleanText(assistantNodes[assistantNodes.length - 1]) : "";
-    const needle = String(message.prompt || "").trim().slice(0, 40);
+    const needle = String(message.prompt || "").trim();
     const userOnScreen = userNodes.some((node) => {
       const text = cleanText(node);
       return text && (!needle || text.includes(needle));
@@ -503,24 +558,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       input_text: inputValue(firstMatch(GPT_WEB_SELECTORS.input)),
       dom: domSnapshot(),
       dom_detail: domDetail(),
+      matched_user_messages: userNodes.map(node => ({ text: cleanText(node), images: userAttachmentCount(node) })),
     });
     return false;
   }
   if (message.type === "bridge_check_image_upload") {
-    const composer = firstMatch(GPT_WEB_SELECTORS.input);
-    let images = [];
-    let uploading = false;
-    let textLength = 0;
-    let hasContent = false;
-    if (composer) {
-      images = Array.from(composer.querySelectorAll("img, [data-testid*='image'], [class*='thumbnail'], [class*='attachment']"));
-      uploading = Boolean(composer.querySelector("[data-testid*='upload'], [class*='uploading'], [aria-busy='true'], [data-state*='uploading']"));
-      textLength = (composer.innerText || "").length;
-      hasContent = images.length > 0 || composer.children.length > 0 || textLength > 0;
-    }
-    const imageCount = images.length;
-    const ready = hasContent && !uploading;
-    sendResponse({ success: true, image_count: imageCount, uploading, ready, text_length: textLength, has_content: hasContent });
+    sendResponse({ success: true, ...composerImageState() });
     return false;
   }
   if (message.type === "bridge_new_chat") {

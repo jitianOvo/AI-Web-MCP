@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gpt-web-mcp"
-version = "0.1.29"
+version = "1.0.0"
 description = "Local MCP and Chromium extension bridge for a bound ChatGPT web tab"
 requires-python = ">=3.11"
 dependencies = [

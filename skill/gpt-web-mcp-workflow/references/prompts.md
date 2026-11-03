@@ -71,7 +71,7 @@
 你是本地执行者。请先安装并阅读“GPT Web MCP工作流规范”skill（解压到 skills 目录，或直接按 SKILL.md 执行），
 然后读取我提供的手写需求 {需求文件路径}。
 按 skill 的工作循环开始：
-1) 自检 Bridge/扩展/标签页（browser_status，缺失时启动 scripts/start_bridge.ps1 或托盘程序）；
+1) 自检 Bridge/扩展/标签页（browser_status，桥离线时启动托盘程序并等待在线；纯看图任务先使用 gpt-web-vision）；
 2) 用首轮身份声明模板向网页端 ChatGPT（大脑）发送目标；
 3) 按大脑规划逐阶段执行，缺什么补什么，每阶段回报证据并请求裁决；
 4) 用户认可后输出最终交付说明。

@@ -1,6 +1,22 @@
 __pycache__/
 *.py[cod]
 .pytest_cache/
+
+# Local conversations, machine diagnostics, and generated integration snippets.
+docs/*validation*.json
+docs/*acceptance.json
+docs/*status-validation.txt
+docs/2026-11-03-restoration.md
+docs/2026-10-09_agent-skill-and-tray-fix.md
+docs/2026-10-09_vision-fix.md
+config/gpt_web_mcp.codex.toml
+research/
+*.local.json
+.env
+.env.*
+!.env.example
+research/protocol-vision/*.burp*
+research/protocol-vision/evidence/*.private.json
 .mypy_cache/
 .venv/
 config/config.json

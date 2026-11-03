@@ -1,7 +1,0 @@
-[mcp_servers.gpt_web_mcp]
-command = "D:/桌面/Work/GPT Web MCP/runtime/venv/Scripts/python.exe"
-args = ["D:/桌面/Work/GPT Web MCP/scripts/run_mcp.py"]
-cwd = "D:/桌面/Work/GPT Web MCP"
-startup_timeout_sec = 15
-tool_timeout_sec = 660
-default_tools_approval_mode = "prompt"

@@ -5,6 +5,7 @@
 #include <wininet.h>
 #include <string>
 #include <cstdio>
+#include "json_fields.h"
 
 #pragma comment(lib, "shell32.lib")
 #pragma comment(lib, "user32.lib")
@@ -28,6 +29,9 @@ static bool g_paused = false;
 static bool g_force_exit = false;
 static std::wstring g_root;
 static std::wstring g_token;
+static std::wstring g_host = L"127.0.0.1";
+static INTERNET_PORT g_port = 8765;
+static std::wstring g_status_error;
 static std::wstring g_status_bridge = L"-";
 static std::wstring g_status_ext = L"-";
 static std::wstring g_status_page = L"-";
@@ -43,100 +47,107 @@ static std::wstring ExeDir() {
     return pos == std::wstring::npos ? L"." : p.substr(0, pos);
 }
 
-static std::wstring ReadConfigToken() {
-    std::wstring path = g_root + L"\\config\\config.json";
-    FILE* f = _wfopen(path.c_str(), L"rb");
-    if (!f) return L"";
-    std::string raw;
-    char buf[4096];
-    size_t n;
-    while ((n = fread(buf, 1, sizeof(buf), f)) > 0) raw.append(buf, n);
-    fclose(f);
-    std::string key = "\"bridge_token\":\"";
-    size_t a = raw.find(key);
-    if (a == std::string::npos) return L"";
-    a += key.size();
-    size_t b = raw.find('"', a);
-    if (b == std::string::npos) return L"";
-    std::string tok = raw.substr(a, b - a);
-    std::wstring out;
-    for (char c : tok) out += (wchar_t)(unsigned char)c;
-    return out;
+static std::wstring Utf8Wide(const std::string& value) {
+    if (value.empty()) return {};
+    const int count = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value.data(), (int)value.size(), nullptr, 0);
+    if (!count) return L"响应编码错误";
+    std::wstring result(count, L'\0');
+    MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value.data(), (int)value.size(), &result[0], count);
+    return result;
 }
 
-static std::wstring HttpGet(const wchar_t* path) {
-    std::wstring out;
-    HINTERNET inet = InternetOpenW(L"GPT-Web-MCP", INTERNET_OPEN_TYPE_PRECONFIG, 0, 0, 0);
-    if (!inet) return out;
-    std::wstring url = L"http://127.0.0.1:8765" + std::wstring(path);
-    HINTERNET conn = InternetOpenUrlW(inet, url.c_str(), 0, 0,
-        INTERNET_FLAG_RELOAD | INTERNET_FLAG_NO_CACHE_WRITE, 0);
-    if (!conn) { InternetCloseHandle(inet); return out; }
-    char buf[8192];
-    DWORD rd = 0;
-    while (InternetReadFile(conn, buf, sizeof(buf) - 1, &rd) && rd > 0) {
-        buf[rd] = 0;
-        out += std::wstring((wchar_t*)buf, (wchar_t*)buf + rd);
-    }
-    InternetCloseHandle(conn);
-    InternetCloseHandle(inet);
-    return out;
+static bool ReadConfig() {
+    FILE* file = _wfopen((g_root + L"\\config\\config.json").c_str(), L"rb");
+    if (!file) { g_status_error = L"配置文件不存在"; return false; }
+    std::string raw;
+    char buffer[4096];
+    size_t count;
+    while ((count = fread(buffer, 1, sizeof(buffer), file)) > 0) raw.append(buffer, count);
+    fclose(file);
+    g_token = Utf8Wide(JsonField(raw, "bridge_token"));
+    const auto host = JsonField(raw, "host");
+    g_host = host.empty() ? L"127.0.0.1" : Utf8Wide(host);
+    g_port = JsonPort(raw);
+    if (g_token.empty()) { g_status_error = L"配置缺少 bridge_token"; return false; }
+    return true;
+}
+
+struct HttpReply { DWORD status = 0; std::string body; DWORD error = 0; };
+
+static HttpReply HttpRequest(const wchar_t* method, const wchar_t* path) {
+    HttpReply reply;
+    HINTERNET session = InternetOpenW(L"GPT-Web-MCP", INTERNET_OPEN_TYPE_DIRECT, nullptr, nullptr, 0);
+    if (!session) { reply.error = GetLastError(); return reply; }
+    DWORD timeout = 1500;
+    InternetSetOptionW(session, INTERNET_OPTION_CONNECT_TIMEOUT, &timeout, sizeof(timeout));
+    InternetSetOptionW(session, INTERNET_OPTION_RECEIVE_TIMEOUT, &timeout, sizeof(timeout));
+    InternetSetOptionW(session, INTERNET_OPTION_SEND_TIMEOUT, &timeout, sizeof(timeout));
+    HINTERNET connection = InternetConnectW(session, g_host.c_str(), g_port, nullptr, nullptr, INTERNET_SERVICE_HTTP, 0, 0);
+    HINTERNET request = connection ? HttpOpenRequestW(connection, method, path, nullptr, nullptr, nullptr,
+        INTERNET_FLAG_RELOAD | INTERNET_FLAG_NO_CACHE_WRITE | INTERNET_FLAG_NO_AUTO_REDIRECT, 0) : nullptr;
+    const std::wstring headers = L"X-Bridge-Token: " + g_token + L"\r\nContent-Type: application/json\r\n";
+    if (request && HttpSendRequestW(request, headers.c_str(), (DWORD)headers.size(), nullptr, 0)) {
+        DWORD length = sizeof(reply.status);
+        HttpQueryInfoW(request, HTTP_QUERY_STATUS_CODE | HTTP_QUERY_FLAG_NUMBER, &reply.status, &length, nullptr);
+        char buffer[8192];
+        DWORD count;
+        while (InternetReadFile(request, buffer, sizeof(buffer), &count) && count) reply.body.append(buffer, count);
+    } else reply.error = GetLastError();
+    if (request) InternetCloseHandle(request);
+    if (connection) InternetCloseHandle(connection);
+    InternetCloseHandle(session);
+    return reply;
 }
 
 static bool HttpPost(const wchar_t* path) {
-    HINTERNET inet = InternetOpenW(L"GPT-Web-MCP", INTERNET_OPEN_TYPE_PRECONFIG, 0, 0, 0);
-    if (!inet) return false;
-    std::wstring url = L"http://127.0.0.1:8765" + std::wstring(path);
-    HINTERNET conn = InternetOpenUrlW(inet, url.c_str(), 0, 0,
-        INTERNET_FLAG_RELOAD | INTERNET_FLAG_NO_CACHE_WRITE, 0);
-    if (!conn) { InternetCloseHandle(inet); return false; }
-    std::wstring headers = L"X-Bridge-Token: " + g_token + L"\r\n";
-    HttpSendRequestW(conn, headers.c_str(), (DWORD)-1L, 0, 0);
-    InternetCloseHandle(conn);
-    InternetCloseHandle(inet);
+    const auto reply = HttpRequest(L"POST", path);
+    if (reply.status != 200) {
+        g_status_error = reply.status ? L"HTTP " + std::to_wstring(reply.status) : L"连接失败 " + std::to_wstring(reply.error);
+        return false;
+    }
     return true;
 }
 
 static bool BridgeOnline() {
-    if (g_token.empty()) return false;
-    std::wstring r = HttpGet(L"/api/status");
-    return r.find(L"\"bridge\":\"online\"") != std::wstring::npos;
+    if (!ReadConfig()) return false;
+    const auto reply = HttpRequest(L"GET", L"/api/status");
+    return reply.status == 200 && JsonField(reply.body, "bridge") == "online";
 }
 
 static void RefreshStatus() {
-    if (g_token.empty()) return;
-    std::wstring r = HttpGet(L"/api/status");
-    g_status_bridge = r.find(L"\"bridge\":\"online\"") != std::wstring::npos ? L"在线" : L"离线";
-    g_status_ext = r.find(L"\"extension\":\"connected\"") != std::wstring::npos ? L"已连接" : L"未连接";
-    g_status_page = r.find(L"\"page\":\"ready\"") != std::wstring::npos ? L"就绪" : L"未就绪";
-    g_status_state = L"idle";
-    size_t sp = r.find(L"\"response_state\":\"");
-    if (sp != std::wstring::npos) {
-        sp += 19;
-        size_t se = r.find(L"\"", sp);
-        if (se != std::wstring::npos) g_status_state = r.substr(sp, se - sp);
+    g_status_error.clear();
+    g_status_bridge = L"离线";
+    g_status_ext = L"未连接";
+    g_status_page = L"未就绪";
+    g_status_state = L"无任务";
+    g_status_target = L"未绑定";
+    if (!ReadConfig()) { g_status_bridge = L"配置异常"; return; }
+    const auto reply = HttpRequest(L"GET", L"/api/status");
+    if (reply.status != 200) {
+        g_status_error = reply.status == 401 ? L"认证失败，请检查配置" :
+            reply.status ? L"HTTP " + std::to_wstring(reply.status) : L"连接失败 " + std::to_wstring(reply.error);
+        return;
     }
-    std::wstring tt = L"未绑定";
-    size_t tp = r.find(L"\"target_id\":\"");
-    if (tp != std::wstring::npos) {
-        tp += 13;
-        size_t te = r.find(L"\"", tp);
-        if (te != std::wstring::npos) {
-            std::wstring v = r.substr(tp, te - tp);
-            if (v != L"unbound" && !v.empty()) tt = v;
-        }
-    }
-    g_status_target = tt;
+    if (JsonField(reply.body, "bridge") != "online") { g_status_error = L"状态响应缺少 bridge 字段"; return; }
+    g_status_bridge = JsonField(reply.body, "paused") == "true" ? L"在线（已暂停）" : L"在线";
+    g_paused = JsonField(reply.body, "paused") == "true";
+    g_status_ext = JsonField(reply.body, "extension") == "connected" ? L"已连接" : L"未连接";
+    g_status_page = JsonField(reply.body, "page") == "ready" ? L"就绪" : L"未就绪";
+    const auto state = JsonField(reply.body, "response_state");
+    g_status_state = state == "streaming" ? L"正在回答" : state == "waiting" ? L"等待回答" : L"空闲";
+    const auto target = JsonField(reply.body, "target_id");
+    if (!target.empty() && target != "unbound") g_status_target = Utf8Wide(target);
 }
 
 static void UpdateMainText(HWND hwnd) {
     std::wstring text =
-        L"版本 0.1.29\r\n\r\n"
+        L"版本 1.0.0\r\n\r\n"
         L"桥服务: " + g_status_bridge + L"\r\n"
         L"扩展:   " + g_status_ext + L"\r\n"
         L"页面:   " + g_status_page + L"\r\n"
         L"任务:   " + g_status_state + L"\r\n"
-        L"绑定:   " + g_status_target + L"\r\n\r\n"
+        L"绑定:   " + g_status_target + L"\r\n\r\n" +
+        (g_status_error.empty() ? L"" : L"诊断: " + g_status_error + L"\r\n\r\n") +
         L"关闭窗口只隐藏到托盘，服务继续运行。\r\n"
         L"右键托盘图标可显示窗口 / 开始·暂停 / 退出程序。";
     if (g_hText) GlobalFree(g_hText);
@@ -149,6 +160,7 @@ static void UpdateMainText(HWND hwnd) {
             GlobalUnlock(g_hText);
         }
     }
+    SetWindowTextW(hwnd, (L"GPT Web MCP Bridge — " + g_status_bridge + L" / " + g_status_ext + L" / " + g_status_page + L" / " + g_status_target).c_str());
     InvalidateRect(hwnd, 0, TRUE);
 }
 
@@ -189,16 +201,14 @@ static void StopBridge(bool graceful) {
 
 static void ToggleService() {
     if (g_paused) {
-        HttpPost(L"/api/resume");
-        g_paused = false;
+        if (HttpPost(L"/api/resume")) g_paused = false;
     } else {
         bool online = BridgeOnline();
         if (!online) {
             StartBridge();
             Sleep(800);
         }
-        HttpPost(L"/api/pause");
-        g_paused = true;
+        if (HttpPost(L"/api/pause")) g_paused = true;
     }
     RefreshStatus();
     UpdateMainText(g_main);
@@ -327,11 +337,25 @@ static LRESULT CALLBACK MainProc(HWND hwnd, UINT msg, WPARAM w, LPARAM l) {
     return DefWindowProcW(hwnd, msg, w, l);
 }
 
-int APIENTRY wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int) {
+int APIENTRY wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR commandLine, int) {
     g_root = ExeDir();
     size_t slash = g_root.rfind(L'\\');
     if (slash != std::wstring::npos) g_root = g_root.substr(0, slash);
-    g_token = ReadConfigToken();
+    ReadConfig();
+    if (std::wstring(commandLine) == L"--check-status") {
+        RefreshStatus();
+        const std::wstring report = L"桥服务: " + g_status_bridge + L"\n扩展: " + g_status_ext +
+            L"\n页面: " + g_status_page + L"\n任务: " + g_status_state + L"\n绑定: " + g_status_target + L"\n诊断: " + g_status_error;
+        const int count = WideCharToMultiByte(CP_UTF8, 0, report.data(), (int)report.size(), nullptr, 0, nullptr, nullptr);
+        std::string bytes(count, '\0');
+        WideCharToMultiByte(CP_UTF8, 0, report.data(), (int)report.size(), &bytes[0], count, nullptr, nullptr);
+        CreateDirectoryW((g_root + L"\\tmp").c_str(), nullptr);
+        FILE* output = _wfopen((g_root + L"\\tmp\\launcher-status.txt").c_str(), L"wb");
+        if (!output) return 2;
+        fwrite(bytes.data(), 1, bytes.size(), output);
+        fclose(output);
+        return g_status_error.empty() ? 0 : 1;
+    }
 
     g_mutex = CreateMutexW(0, TRUE, L"GPT-Web-MCP-SingleInstance");
     if (g_mutex && GetLastError() == ERROR_ALREADY_EXISTS) {
@@ -342,6 +366,7 @@ int APIENTRY wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int) {
 
     std::wstring ico = g_root + L"\\res\\GPT_Web_MCP_iconic.ico";
     g_icon = (HICON)LoadImageW(0, ico.c_str(), IMAGE_ICON, 32, 32, LR_LOADFROMFILE);
+    if (!g_icon) g_icon = (HICON)LoadImageW(hInst, MAKEINTRESOURCEW(1), IMAGE_ICON, 32, 32, 0);
     if (!g_icon) g_icon = LoadIconW(0, IDI_APPLICATION);
 
     WNDCLASSW wm;

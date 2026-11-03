@@ -4,6 +4,16 @@
 
 本文件是 V1 到后续版本共同使用的契约。浏览器选择器可以变化，但 MCP 工具和 Bridge 消息应保持向后兼容；有破坏性变更时递增协议主版本。
 
+## 图片请求（0.1.30）
+
+`POST /api/chat/send-image` 接收 `image_path`、`prompt`、`target_id`、`conversation_id`、`expected_format`、`timeout_ms` 和可选 `request_id`。图片最大 20 MiB；`timeout_ms` 范围 1000..1800000。`skip_paste=true` 表示只使用输入框已有附件。
+
+同 ID 重试合并或返回缓存；不同内容使用同 ID 返回 `REQUEST_ID_CONFLICT`。省略 ID 时自动按目标、会话、图片内容和问题去重。完成任务保存真实会话 ID，缓存返回带 `deduplicated=true`；失败任务同 ID 不自动重发。
+
+任务进入普通 target 队列。Bridge 发送 `send_image`，包含 `image_path`、`skip_paste` 和普通任务字段；扩展向目标文件输入框上传一次，不使用系统剪贴板。成功返回文字 `result`、`conversation_id`；首次返回可带 `uploaded_image_count`。任务可通过普通任务查询及取消接口管理。
+
+`DELIVERY_UNCERTAIN` 表示响应通道丢失，不能据此认定未发送；查询原任务与历史。`COMPOSER_NOT_EMPTY`、`IMAGE_UPLOAD_TIMEOUT`、`IMAGE_INPUT_NOT_FOUND` 表示任务未能安全完成图片准备，禁止补发文字问题。
+
 ## 通用消息封装
 
 扩展与 Bridge 的 WebSocket 消息使用 JSON：

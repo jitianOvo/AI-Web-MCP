@@ -118,91 +118,48 @@ async function focusEditorFromBridge(message, targetId) {
   await activateBoundTab(targetId);
 }
 
-// Vision path: the local bridge has already placed an image on the system
-// clipboard.  Focus the composer, paste with a real Ctrl+V, wait for the page
-// upload to finish, then send prompt + text through the normal CDP pipeline.
+// A file input targets one tab without changing the shared OS clipboard.
+async function uploadImageFile(tabId, imagePath) {
+  await debuggerAttach(tabId);
+  try {
+    const probe = await cdpCommand(tabId, "Runtime.evaluate", {
+      expression: `(() => { const editor=${COMPOSER_JS}; const scope=editor?.closest('form') || document; return Array.from(scope.querySelectorAll('input[type="file"]')).find(e => /image/i.test(e.accept)) || Array.from(document.querySelectorAll('input[type="file"]')).find(e => /image/i.test(e.accept)); })()`,
+    });
+    const objectId = probe.result?.objectId;
+    if (!objectId) throw bridgeError("IMAGE_INPUT_NOT_FOUND", "页面没有图片文件输入入口");
+    await cdpCommand(tabId, "DOM.setFileInputFiles", { files: [imagePath], objectId });
+  } finally {
+    await debuggerDetach(tabId);
+  }
+}
+
 async function sendImageFromBridge(message, targetId) {
   const requestId = String(message.request_id || "");
+  if (activeRequests.has(targetId)) {
+    sendToBridge(targetId, { type: "error", request_id: requestId, code: "EXTENSION_BUSY", message: "目标仍在处理上一项任务" });
+    return;
+  }
+  activeRequests.set(targetId, requestId);
   try {
     const tab = await getBoundTab(targetId);
     if (!tab) throw bridgeError("CHATGPT_TAB_NOT_FOUND", "请先绑定 ChatGPT 标签页");
-    sendToBridge(targetId, { type: "progress", request_id: requestId, stage: "VISION_PASTE", detail: "pasting image" });
-    await ensureWindowForeground(tab.id);
-    await debuggerAttach(tab.id);
-    try {
-      await cdpFocusEditor(tab.id);  // select-all clears composer; fine before paste
-      // Ctrl+V dispatches a trusted paste with the system clipboard image.
-      // Full Ctrl+V key sequence (rawKeyDown + char + keyUp) so the renderer
-      // performs a real paste from the system clipboard.
-      await cdpCommand(tab.id, "Input.dispatchKeyEvent", { type: "rawKeyDown", key: "v", code: "KeyV", windowsVirtualKeyCode: 86, nativeVirtualKeyCode: 86, modifiers: 2 });
-      await cdpCommand(tab.id, "Input.dispatchKeyEvent", { type: "char", key: "v", text: "v", unmodifiedText: "v", windowsVirtualKeyCode: 86, nativeVirtualKeyCode: 86, modifiers: 2 });
-      await cdpCommand(tab.id, "Input.dispatchKeyEvent", { type: "keyUp", key: "v", code: "KeyV", windowsVirtualKeyCode: 86, nativeVirtualKeyCode: 86, modifiers: 2 });
-      await new Promise((resolve) => setTimeout(resolve, 300));
-    } finally {
-      await debuggerDetach(tab.id);
-    }
-    // When the bridge already pasted the image at the OS level (--paste), skip
-    // the CDP Ctrl+V and go straight to waiting for the upload.
-    if (message.pasted !== true) {
-      await ensureWindowForeground(tab.id);
-      await debuggerAttach(tab.id);
-      try {
-        await cdpFocusEditor(tab.id);  // select-all clears composer; fine before paste
-        // Full Ctrl+V key sequence (rawKeyDown + char + keyUp) so the renderer
-        // performs a real paste from the system clipboard.
-        await cdpCommand(tab.id, "Input.dispatchKeyEvent", { type: "rawKeyDown", key: "v", code: "KeyV", windowsVirtualKeyCode: 86, nativeVirtualKeyCode: 86, modifiers: 2 });
-        await cdpCommand(tab.id, "Input.dispatchKeyEvent", { type: "char", key: "v", text: "v", unmodifiedText: "v", windowsVirtualKeyCode: 86, nativeVirtualKeyCode: 86, modifiers: 2 });
-        await cdpCommand(tab.id, "Input.dispatchKeyEvent", { type: "keyUp", key: "v", code: "KeyV", windowsVirtualKeyCode: 86, nativeVirtualKeyCode: 86, modifiers: 2 });
-        await new Promise((resolve) => setTimeout(resolve, 300));
-      } finally {
-        await debuggerDetach(tab.id);
-      }
-    }
-    // Wait until the composer shows the uploaded image and upload finished.
-    sendToBridge(targetId, { type: "progress", request_id: requestId, stage: "VISION_UPLOAD", detail: "waiting upload" });
-    const uploadDeadline = Date.now() + 180000;
-    let ready = false;
-    while (Date.now() < uploadDeadline) {
-      const state = await sendTaskToPage(tab.id, { type: "bridge_check_image_upload" }, 5000);
-      if (state && state.ready) { ready = true; break; }
-      await new Promise((resolve) => setTimeout(resolve, 800));
-    }
-    if (!ready) {
-      // ChatGPT keeps the send queued until the upload finishes, so do not
-      // block the pipeline on slow networks: proceed and let the page send.
-      sendToBridge(targetId, { type: "progress", request_id: requestId, stage: "VISION_UPLOAD_SLOW", detail: "upload not confirmed; relying on page auto-send" });
-    }
-    sendToBridge(targetId, { type: "progress", request_id: requestId, stage: "VISION_UPLOADED", detail: "upload ready" });
-    // Now send prompt + text through the standard pipeline.
-    // Append prompt text after the pasted image (do NOT select-all; that would
-    // delete the image).  Then Enter submits the image+text message.
-    const prompt = String(message.prompt || "请描述这张图片");
-    await debuggerAttach(tab.id);
-    try {
-      await cdpFocusComposerEnd(tab.id);  // caret to end, keep the pasted image
-      await cdpCommand(tab.id, "Input.insertText", { text: prompt });
-      await new Promise((resolve) => setTimeout(resolve, 400));
-    } finally {
-      await debuggerDetach(tab.id);
-    }
-    // Wait for user message + answer through the normal content pipeline.
     const response = await sendTaskToPage(tab.id, {
-      type: "bridge_task",
-      request_id: requestId,
+      type: "bridge_task", request_id: requestId,
       conversation_id: String(message.conversation_id || "current"),
-      prompt,
+      prompt: String(message.prompt || "请描述这张图片"),
       expected_format: String(message.expected_format || "text"),
       timeout_ms: Number(message.timeout_ms || 600000),
-      input_backend: "send_only",  // text+image already in composer; only click send + read
+      input_backend: "image", image_path: String(message.image_path || ""),
+      skip_paste: message.skip_paste === true,
     });
     if (!response?.success) throw bridgeError(response?.code || "VISION_SEND_FAILED", response?.message || "图片消息发送失败");
-    sendToBridge(targetId, { type: "result", request_id: requestId, target_id: targetId, result: response.result, conversation_id: response.conversation_id, message_id: response.message_id });
+    sendToBridge(targetId, { type: "result", request_id: requestId, target_id: targetId,
+      result: response.result, conversation_id: response.conversation_id, message_id: response.message_id, uploaded_image_count: response.uploaded_image_count });
   } catch (error) {
-    sendToBridge(targetId, {
-      type: "error", request_id: requestId, target_id: targetId,
-      code: error.code || "VISION_SEND_FAILED", message: error.detail || error.message || String(error),
-    });
+    sendToBridge(targetId, { type: "error", request_id: requestId, target_id: targetId,
+      code: error.code || "VISION_SEND_FAILED", message: error.detail || error.message || String(error) });
   } finally {
+    activeRequests.delete(targetId);
     await sendStatus(targetId);
   }
 }
@@ -226,35 +183,59 @@ async function reloadExtensionFromBridge(message, socketTargetId) {
   try { chrome.runtime.reload(); } catch (_) {}
 }
 
+function normalizeChatGPTDestination(value) {
+  const raw = value || "https://chatgpt.com/";
+  if (typeof raw !== "string" || /[\s\\]/.test(raw)) throw bridgeError("INVALID_CHATGPT_URL", "必须提供完整 HTTPS ChatGPT 会话 URL");
+  let url;
+  try { url = new URL(raw); } catch (_) { throw bridgeError("INVALID_CHATGPT_URL", "无效的 ChatGPT URL"); }
+  const path = url.pathname.replace(/\/+$/, "");
+  if (url.protocol !== "https:" || !["chatgpt.com", "chat.openai.com"].includes(url.host) ||
+      url.username || url.password || url.search || url.hash ||
+      (path && !/^(?:\/g\/[A-Za-z0-9_-]+)?\/c\/[A-Za-z0-9_-]+$/.test(path))) {
+    throw bridgeError("INVALID_CHATGPT_URL", "仅接受 HTTPS ChatGPT 首页或 /c/<conversation_id> 会话地址");
+  }
+  return `https://${url.host}${path || "/"}`;
+}
+
 async function openTabFromBridge(message, socketTargetId) {
   const replyTarget = socketTargetId || CONTROL_TARGET_ID;
   try {
+    const destination = normalizeChatGPTDestination(message.url);
+    const conversationId = destination.match(/\/c\/([A-Za-z0-9_-]+)$/)?.[1] || "";
     // Some installs run with no visible window (--no-startup-window), where
     // chrome.tabs.create fails with "No current window". Create a window first.
-    let tab;
-    try {
-      tab = await chrome.tabs.create({ url: "https://chatgpt.com/" });
-    } catch (noWindow) {
-      const win = await chrome.windows.create({ url: "https://chatgpt.com/", focused: true });
-      tab = win && win.tabs ? win.tabs[0] : null;
-      if (!tab) throw noWindow;
+    let tab = conversationId ? (await chrome.tabs.query({ url: ["https://chatgpt.com/*", "https://chat.openai.com/*"] })).find((candidate) => {
+      try { return normalizeChatGPTDestination(candidate.url) === destination; } catch (_) { return false; }
+    }) : null;
+    const reused = Boolean(tab);
+    if (!tab) {
+      try {
+        tab = await chrome.tabs.create({ url: destination });
+      } catch (noWindow) {
+        const win = await chrome.windows.create({ url: destination, focused: true });
+        tab = win && win.tabs ? win.tabs[0] : null;
+        if (!tab) throw noWindow;
+      }
     }
-    const deadline = Date.now() + 30000;
-    while (Date.now() < deadline) {
-      const current = await chrome.tabs.get(tab.id);
-      if (current?.status === "complete") break;
-      await new Promise((resolve) => setTimeout(resolve, 400));
-    }
-    const readyDeadline = Date.now() + 30000;
+    await chrome.tabs.update(tab.id, { active: true });
+    await chrome.windows.update(tab.windowId, { focused: true });
+    const readyDeadline = Date.now() + 40000;
     while (Date.now() < readyDeadline) {
-      if (await pageReady(tab.id)) break;
+      const current = await chrome.tabs.get(tab.id);
+      if (current?.status === "complete" && await pageReady(tab.id)) break;
       await new Promise((resolve) => setTimeout(resolve, 400));
     }
     const ready = await pageReady(tab.id);
+    const current = await chrome.tabs.get(tab.id);
+    if (conversationId && normalizeChatGPTDestination(current.url) !== destination) {
+      throw bridgeError("CONVERSATION_URL_MISMATCH", "网页未进入指定历史会话；未绑定或发送新问题");
+    }
+    if (!ready) throw bridgeError("TARGET_NOT_READY", "ChatGPT 页面未就绪，请检查登录与会话访问权限");
     const bound = await bindSpecificTab(tab.id);
     sendToBridge(replyTarget, {
       type: "open_result", request_id: String(message.request_id || ""),
       tab_id: tab.id, target_id: bound.target_id, ready: Boolean(ready), success: true,
+      url: current.url, conversation_id: conversationId, reused,
     });
   } catch (error) {
     sendToBridge(replyTarget, {
@@ -488,6 +469,10 @@ async function runTask(message, socketTargetId) {
 }
 
 async function sendTaskToPage(tabId, payload, timeoutMs = 30000) {
+  if (payload.type === "bridge_task") {
+    try { return await chrome.tabs.sendMessage(tabId, payload); }
+    catch (error) { throw bridgeError("DELIVERY_UNCERTAIN", "页面响应通道断开，请查询原任务，禁止自动重发: " + error.message); }
+  }
   const deadline = Date.now() + timeoutMs;
   let lastError = null;
   while (Date.now() < deadline) {
@@ -641,6 +626,16 @@ async function cdpTypeAndEnter(tabId, text) {
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   (async () => {
+    if (message.type === "bridge_upload_image") {
+      const targetId = targetIdForTab(sender.tab?.id);
+      if (!targetId || activeRequests.get(targetId) !== String(message.request_id)) {
+        throw bridgeError("REQUEST_NOT_ACTIVE", "图片上传没有对应活动任务");
+      }
+      await uploadImageFile(sender.tab.id, String(message.image_path || ""));
+      sendResponse({ success: true });
+      return;
+    }
+
     if (message.type === "bridge_message_event") {
       const targetId = targetIdForTab(sender.tab?.id);
       if (targetId) {
@@ -687,7 +682,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       for (const targetId of Object.keys(boundTabs)) connectBridge(targetId);
       sendResponse({ success: true });
     }
-  })().catch((error) => sendResponse({ success: false, message: error.message }));
+  })().catch((error) => sendResponse({ success: false, code: error.code || "EXTENSION_ERROR", message: error.detail || error.message }));
   return true;
 });
 

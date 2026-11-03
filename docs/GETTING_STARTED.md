@@ -77,12 +77,6 @@ Set-Location -LiteralPath 'D:\桌面\Work\GPT Web MCP'
 
 ### 统一 EXE 入口（V4 推荐）
 
-### Backend 配置（UI / 官方 API）
-
-`config.json` 可设置 `"backend": "auto"`（默认，UI 优先失败自动走 API）、`"ui"` 或 `"api"`；可选 `"openai_model"`。
-API Key 放在环境变量 `OPENAI_API_KEY`，或 `config/api_key.local.json`（内容 `{"openai_api_key": "sk-..."}`，已 gitignore，不会提交）。
-未配置 Key 时 API 后端返回明确的 `API_KEY_MISSING` 错误，不会卡死主程序。
-
 双击 `build\GPT Web MCP.exe` 即可：自动启动 Bridge、显示控制台日志、创建右下角托盘图标；
 点控制台右上角 X 只隐藏窗口不退出；左键托盘显示/隐藏控制台，右键可“启动/暂停、关闭”；关闭时自动停止子进程。
 
@@ -113,6 +107,7 @@ tool_timeout_sec = 660
 常用工具入口：
 
 - `list_chatgpt_tabs`：查看全部 ChatGPT 标签页。
+- `open_chatgpt_conversation(url)`：传入旧聊天完整地址，复用已有标签或打开指定会话，返回 `target_id`，后续问题和图片传入该目标。
 - `bind_chatgpt_tab(tab_id)`：绑定指定标签页。
 - `get_bound_chatgpt_tab`：查看当前绑定。
 - `ask_chatgpt(question)`：一键发送并等待完整回答。

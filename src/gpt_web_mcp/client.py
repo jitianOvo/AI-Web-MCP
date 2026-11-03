@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -18,6 +19,21 @@ from .config import PROJECT_ROOT, load_config
 
 
 _START_LOCK = threading.Lock()
+
+
+def normalize_chatgpt_url(url: str, require_conversation: bool = False) -> str:
+    """Validate an explicit browser destination without accepting arbitrary origins."""
+    if not isinstance(url, str) or any(ord(char) <= 32 for char in url) or "\\" in url:
+        raise ValueError("必须提供完整 HTTPS ChatGPT 会话 URL")
+    parsed = urllib.parse.urlsplit(url or "https://chatgpt.com/")
+    if (parsed.scheme != "https" or parsed.netloc not in {"chatgpt.com", "chat.openai.com"}
+            or parsed.query or parsed.fragment):
+        raise ValueError("仅接受 chatgpt.com 或 chat.openai.com 的 HTTPS 会话 URL，不带查询或片段")
+    path = parsed.path.rstrip("/")
+    if not re.fullmatch(r"(?:/g/[A-Za-z0-9_-]+)?/c/[A-Za-z0-9_-]+", path):
+        if path or require_conversation:
+            raise ValueError("历史会话 URL 必须包含 /c/<conversation_id>")
+    return f"https://{parsed.netloc}{path or '/'}"
 
 
 class BridgeError(RuntimeError):
@@ -53,6 +69,8 @@ class BridgeClient:
             except Exception:
                 result = {"error": {"code": "BRIDGE_HTTP_ERROR", "message": str(error)}}
         except (urllib.error.URLError, TimeoutError, OSError) as error:
+            if method == "POST" and path == "/api/chat/send-image":
+                raise BridgeError("DELIVERY_UNCERTAIN", "图片请求响应未收到，请查询原 request_id，禁止自动重复发送", str((payload or {}).get("request_id", ""))) from error
             raise BridgeError("BRIDGE_OFFLINE", f"本地 Bridge 未响应：{error}") from error
         if not result.get("success", False):
             detail = result.get("error") or {}
@@ -76,8 +94,28 @@ class BridgeClient:
     def latest_message(self, conversation_id: str = "current") -> dict[str, Any]:
         return self._request("GET", f"/api/chat/latest?conversation_id={urllib.parse.quote(conversation_id)}")
 
-    def open_tab(self) -> dict[str, Any]:
-        return self._request("POST", "/api/tabs/open", {}, timeout=50)
+    def open_tab(self, url: str = "") -> dict[str, Any]:
+        try:
+            destination = normalize_chatgpt_url(url)
+        except ValueError as error:
+            raise BridgeError("INVALID_CHATGPT_URL", str(error)) from error
+        return self._request("POST", "/api/tabs/open", {"url": destination}, timeout=60)
+
+    def open_conversation(self, url: str) -> dict[str, Any]:
+        try:
+            destination = normalize_chatgpt_url(url, require_conversation=True)
+        except ValueError as error:
+            raise BridgeError("INVALID_CHATGPT_URL", str(error)) from error
+        result = self.open_tab(destination)
+        if not result.get("ready"):
+            raise BridgeError("TARGET_NOT_READY", "历史会话页面尚未就绪", str(result.get("request_id", "")))
+        try:
+            actual_url = normalize_chatgpt_url(result.get("url", ""), require_conversation=True)
+        except ValueError:
+            actual_url = ""
+        if actual_url != destination or result.get("conversation_id") != destination.rsplit("/", 1)[-1]:
+            raise BridgeError("CONVERSATION_URL_MISMATCH", "扩展未确认指定会话地址；请刷新扩展后查询目标状态", str(result.get("request_id", "")))
+        return result
 
     def reload_extension(self, tab_id: int = 0) -> dict[str, Any]:
         return self._request("POST", "/api/reload-extension", {"tab_id": int(tab_id)}, timeout=5)
@@ -162,10 +200,11 @@ class BridgeClient:
             "input_backend": input_backend,
         }, timeout=timeout_ms / 1000 + 20)
 
-    def send_image(self, image_path: str, prompt: str = "请描述这张图片", conversation_id: str = "", expected_format: str = "text", timeout_ms: int = 600000, target_id: str = "") -> dict[str, Any]:
-        """Ask the web ChatGPT to understand a local image (clipboard-paste path)."""
+    def send_image(self, image_path: str, prompt: str = "请描述这张图片", conversation_id: str = "", expected_format: str = "text", timeout_ms: int = 600000, target_id: str = "", request_id: str = "") -> dict[str, Any]:
+        """Upload one local image. Reuse request_id to recover without resending."""
         return self._request("POST", "/api/chat/send-image", {
             "image_path": image_path,
+            "request_id": request_id,
             "prompt": prompt,
             "conversation_id": conversation_id,
             "expected_format": expected_format,
@@ -173,10 +212,11 @@ class BridgeClient:
             "target_id": target_id,
         }, timeout=timeout_ms / 1000 + 20)
 
-    def send_image_only(self, prompt: str = "请描述这些图片", conversation_id: str = "", expected_format: str = "text", timeout_ms: int = 600000, target_id: str = "") -> dict[str, Any]:
+    def send_image_only(self, prompt: str = "请描述这些图片", conversation_id: str = "", expected_format: str = "text", timeout_ms: int = 600000, target_id: str = "", request_id: str = "") -> dict[str, Any]:
         """Send a prompt with images already pasted in the composer (skip paste)."""
         return self._request("POST", "/api/chat/send-image", {
             "image_path": "", "skip_paste": True,
+            "request_id": request_id,
             "prompt": prompt,
             "conversation_id": conversation_id,
             "expected_format": expected_format,

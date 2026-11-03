@@ -10,6 +10,9 @@ import time
 import os
 import uuid
 import subprocess
+import hashlib
+import mimetypes
+from pathlib import Path
 from dataclasses import dataclass
 from typing import Any
 
@@ -17,9 +20,12 @@ from aiohttp import WSMsgType, web
 
 from . import __version__
 from .config import load_config, resolve_project_path
+from .client import normalize_chatgpt_url
 from .protocol import make_message, new_request_id, text_hash
 from .storage import Store
 from .targets import TargetRegistry
+
+OPEN_TARGET_READY_TIMEOUT = 5.0
 
 
 class BridgeFailure(RuntimeError):
@@ -43,6 +49,9 @@ class Job:
     cancelled: bool = False
     source_content: str = ""
     input_backend: str = ""
+    image_path: str = ""
+    skip_paste: bool = False
+    fingerprint: str = ""
 
 
 def configure_logging(debug: bool) -> logging.Logger:
@@ -78,7 +87,6 @@ class BridgeService:
         self.open_waiters: dict[str, asyncio.Future] = {}
         self.new_chat_waiters: dict[str, asyncio.Future] = {}
         self.state_waiters: dict[str, asyncio.Future] = {}
-        self.image_waiters: dict[str, asyncio.Future] = {}
         self.paused = False
         self.last_request_id = ""
         self.last_success_time = 0.0
@@ -271,6 +279,11 @@ class BridgeService:
     async def handle_open_tab(self, request: web.Request) -> web.Response:
         if not self.authorized(request):
             return self.error("UNAUTHORIZED", "Bridge token 不正确", 401)
+        try:
+            payload = await request.json() if request.can_read_body else {}
+            url = normalize_chatgpt_url(payload.get("url", ""))
+        except (ValueError, TypeError, AttributeError) as error:
+            return self.error("INVALID_CHATGPT_URL", str(error))
         connection = self.targets.choose_control()
         if not connection or connection.websocket.closed:
             return self.error("EXTENSION_NOT_CONNECTED", "浏览器扩展尚未连接", 503)
@@ -278,18 +291,43 @@ class BridgeService:
         request_id = new_request_id("open")
         waiter = loop.create_future()
         self.open_waiters[request_id] = waiter
-        await connection.websocket.send_json(make_message("open_tab", request_id=request_id))
+        await connection.websocket.send_json(make_message("open_tab", request_id=request_id, url=url))
         try:
             result = await asyncio.wait_for(waiter, timeout=45)
+            await self.wait_open_target(result, url)
             return web.json_response({
                 "success": True, "request_id": request_id,
                 "tab_id": result.get("tab_id"), "target_id": str(result.get("target_id", "")),
                 "ready": bool(result.get("ready")),
+                "url": str(result.get("url", "")),
+                "conversation_id": str(result.get("conversation_id", "")),
+                "reused": bool(result.get("reused")),
             })
+        except BridgeFailure as error:
+            return self.error(error.code, error.message, 503, request_id)
         except asyncio.TimeoutError:
             return self.error("OPEN_TAB_TIMEOUT", "新建标签页超时", 503, request_id)
         finally:
             self.open_waiters.pop(request_id, None)
+
+    async def wait_open_target(self, result: dict[str, Any], url: str) -> None:
+        """The open reply can precede the new target socket's hello/status."""
+        deadline = asyncio.get_running_loop().time() + OPEN_TARGET_READY_TIMEOUT
+        target_id = str(result.get("target_id", ""))
+        if not result.get("ready") or not target_id:
+            raise BridgeFailure("TARGET_NOT_READY", "新打开标签页尚未就绪；未发送问题")
+        while True:
+            target = self.targets.get(target_id)
+            if target and not target.websocket.closed and self.targets.is_ready(target) and target.state.get("tab_url"):
+                try:
+                    actual_url = normalize_chatgpt_url(target.state.get("tab_url", ""))
+                except ValueError:
+                    actual_url = ""
+                if target.state.get("tab_id") == result.get("tab_id") and actual_url == url:
+                    return
+            if asyncio.get_running_loop().time() >= deadline:
+                raise BridgeFailure("TARGET_NOT_READY", "标签页已打开，但目标连接或会话地址尚未就绪；查询状态后继续，勿重发")
+            await asyncio.sleep(0.05)
 
     async def handle_reload_extension(self, request: web.Request) -> web.Response:
         if not self.authorized(request):
@@ -363,7 +401,7 @@ class BridgeService:
         await connection.websocket.send_json(make_message("check_state", request_id=state_request_id, target_id=connection.target_id, prompt=""))
         try:
             state_result = await asyncio.wait_for(state_waiter, timeout=8)
-            for key in ("user_message_on_screen", "assistant_present", "last_text", "generating", "page_ready", "input_ready", "is_new_chat", "conversation_id", "input_text", "url", "dom", "dom_detail"):
+            for key in ("user_message_on_screen", "assistant_present", "last_text", "generating", "page_ready", "input_ready", "is_new_chat", "conversation_id", "input_text", "url", "dom", "dom_detail", "matched_user_messages"):
                 if key in state_result:
                     sync[key] = state_result[key]
         except asyncio.TimeoutError:
@@ -409,104 +447,76 @@ class BridgeService:
         return web.json_response({"success": True, "shutting_down": True})
 
     async def handle_send_image(self, request: web.Request) -> web.Response:
-        """Ask the web ChatGPT to understand an image via the clipboard-paste path."""
         if not self.authorized(request):
             return self.error("UNAUTHORIZED", "Bridge token 不正确", 401)
         try:
             payload = await request.json()
-        except Exception:
-            return self.error("INVALID_JSON", "请求体必须是 JSON")
+            if not isinstance(payload, dict):
+                raise ValueError()
+            timeout_ms = int(payload.get("timeout_ms", 600000))
+            if not 1000 <= timeout_ms <= 1800000:
+                raise ValueError()
+        except (ValueError, TypeError):
+            return self.error("INVALID_REQUEST", "请求须为 JSON 对象，timeout_ms 范围 1000..1800000")
+        prompt = str(payload.get("prompt") or "请描述这张图片")
+        if len(prompt) > int(self.config.get("max_text_chars", 200000)):
+            return self.error("CONTENT_TOO_LARGE", "消息超过字符上限", 413)
+        skip_paste = payload.get("skip_paste") is True
         image_path = str(payload.get("image_path", "")).strip()
-        skip_paste = bool(payload.get("skip_paste"))
         image_file = None
-        if image_path:
-            candidate = resolve_project_path(image_path)
-            if not candidate.exists() or not candidate.is_file():
-                return self.error("IMAGE_NOT_FOUND", f"图片不存在：{candidate}", 404)
-            image_file = candidate
-        elif not skip_paste:
-            return self.error("INVALID_IMAGE", "image_path 不能为空")
-        requested_target = str(payload.get("target_id", ""))
-        connection = self.targets.choose(requested_target)
+        digest = "existing-attachment"
+        if not skip_paste:
+            if not image_path:
+                return self.error("INVALID_IMAGE", "image_path 不能为空")
+            image_file = resolve_project_path(image_path).resolve()
+            if not image_file.is_file():
+                return self.error("IMAGE_NOT_FOUND", f"图片不存在：{image_file}", 404)
+            if image_file.stat().st_size > 20 * 1024 * 1024:
+                return self.error("IMAGE_TOO_LARGE", "单张图片上限 20 MiB", 413)
+            mime = mimetypes.guess_type(str(image_file))[0] or ""
+            if not mime.startswith("image/"):
+                return self.error("INVALID_IMAGE", "文件必须是图片")
+            digest = await asyncio.to_thread(lambda: hashlib.sha256(image_file.read_bytes()).hexdigest())
+        connection = self.targets.choose(str(payload.get("target_id", "")))
         if not connection or connection.websocket.closed:
             return self.error("EXTENSION_NOT_CONNECTED", "浏览器扩展尚未连接", 503)
-        # System-level Ctrl+V (no CDP, works even when the window is background).
-        # Let the extension bring the target window to the foreground and focus
-        # the composer, then OS-level Ctrl+V pastes into the focused composer.
-        if not skip_paste:
-            try:
-                await asyncio.to_thread(self._set_clipboard_image, image_file)
-            except BridgeFailure as error:
-                return self.error(error.code, error.message, 500)
-        if not skip_paste:
-            try:
-                await connection.websocket.send_json(make_message(
-                    "focus", request_id=new_request_id("imgfocus"), target_id=connection.target_id,
-                ))
-            except Exception:
-                pass
-            await asyncio.sleep(1.0)
-            try:
-                await asyncio.to_thread(self._paste_clipboard)
-            except BridgeFailure as error:
-                return self.error(error.code, error.message, 500)
-        request_id = str(payload.get("request_id") or new_request_id("img"))
-        waiter = asyncio.get_running_loop().create_future()
-        self.image_waiters[request_id] = waiter
-        timeout_ms = int(payload.get("timeout_ms", 600000))
+        target_id = connection.target_id
+        conversation_id = str(payload.get("conversation_id") or "current")
+        expected_format = str(payload.get("expected_format") or "text")
+        fingerprint = hashlib.sha256(json.dumps(
+            [target_id, conversation_id, digest, prompt, expected_format, skip_paste],
+            ensure_ascii=False, separators=(",", ":"),
+        ).encode("utf-8")).hexdigest()
+        request_id = str(payload.get("request_id") or "img_" + fingerprint)
+        job = self.jobs.get(request_id)
+        saved = self.store.get_task(request_id)
+        if saved and saved.get("fingerprint") != fingerprint:
+            return self.error("REQUEST_ID_CONFLICT", "request_id 已用于不同内容", 409, request_id)
+        if saved and not job:
+            if saved["state"] == "completed":
+                return web.json_response({"success": True, "request_id": request_id,
+                    "result": saved["result"], "conversation_id": saved["conversation_id"], "deduplicated": True})
+            return self.error(saved.get("error_code") or "REQUEST_INTERRUPTED",
+                (saved.get("error_message") or "原请求未完成") + "；请检查原任务，确认后用新的 request_id 提交", 503, request_id)
+        if not job:
+            if self.paused:
+                return self.error("PAUSED", "Bridge 已暂停", 503, request_id)
+            if self.pending_queue_size() >= int(self.config.get("max_queue_size", 20)):
+                return self.error("QUEUE_FULL", "Bridge 队列已满", 429, request_id)
+            job = Job(request_id, target_id, conversation_id, prompt, expected_format,
+                timeout_ms, asyncio.get_running_loop().create_future(),
+                image_path=str(image_file or ""), skip_paste=skip_paste, fingerprint=fingerprint)
+            self.jobs[request_id] = job
+            self.last_request_id = request_id
+            self.store.create_task(request_id, conversation_id, prompt, target_id=target_id, fingerprint=fingerprint)
+            await self.enqueue_job(job)
         try:
-            await connection.websocket.send_json(make_message(
-                "send_image", request_id=request_id, target_id=connection.target_id,
-                conversation_id=str(payload.get("conversation_id") or "current"),
-                prompt=str(payload.get("prompt") or "请描述这张图片"),
-                expected_format=str(payload.get("expected_format") or "text"),
-                timeout_ms=timeout_ms,
-                pasted=True,
-            ))
-            result = await asyncio.wait_for(waiter, timeout=timeout_ms / 1000 + 20)
+            result = await asyncio.shield(job.future)
+            self.last_success_time = time.time()
             return web.json_response({"success": True, "request_id": request_id, **result})
-        except asyncio.TimeoutError:
-            return self.error("IMAGE_TIMEOUT", "图片询问超时", 503, request_id)
         except BridgeFailure as error:
-            return self.error(error.code, error.message, 499, request_id)
-        finally:
-            self.image_waiters.pop(request_id, None)
-
-    @staticmethod
-    def _set_clipboard_image(image_file: Path) -> None:
-        """Put the image onto the system clipboard via PowerShell (STA)."""
-        image_file = image_file.resolve()
-        script = (
-            "Add-Type -AssemblyName System.Windows.Forms; "
-            "Add-Type -AssemblyName System.Drawing; "
-            f"$img=[System.Drawing.Image]::FromFile(\"{str(image_file).replace(chr(92), chr(92) + chr(92))}\"); "
-            "$bmp=New-Object System.Drawing.Bitmap $img; "
-            "[System.Windows.Forms.Clipboard]::SetImage($bmp); "
-            "$img.Dispose(); $bmp.Dispose(); "
-            "'clipboard-ok'"
-        )
-        completed = subprocess.run(
-            ["powershell", "-NoProfile", "-STA", "-Command", script],
-            capture_output=True, text=True, timeout=30,
-        )
-        if completed.returncode != 0 or "clipboard-ok" not in completed.stdout:
-            detail = (completed.stderr or "").strip()[:300] or "PowerShell 设置剪贴板失败"
-            raise BridgeFailure("CLIPBOARD_FAILED", detail)
-
-    @staticmethod
-    def _paste_clipboard() -> None:
-        """System-level Ctrl+V via the native helper (paste-only, no Enter)."""
-        helper = resolve_project_path(
-            str(load_config().get("sendinput_helper", "build/gpt_sendinput.exe"))
-        )
-        if not helper.exists():
-            raise BridgeFailure("SENDINPUT_MISSING", f"系统级粘贴助手不存在：{helper}")
-        completed = subprocess.run(
-            [str(helper), "--paste"], timeout=25,
-            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        )
-        if completed.returncode != 0:
-            raise BridgeFailure("SENDINPUT_PASTE_FAILED", f"系统级粘贴失败 rc={completed.returncode}")
+            self.last_error = error.code
+            return self.error(error.code, error.message, 503, request_id)
 
     async def handle_send(self, request: web.Request) -> web.Response:
         if not self.authorized(request):
@@ -928,7 +938,7 @@ class BridgeService:
             return
         if kind == "progress":
             stage = str(data.get("stage", ""))
-            if stage and request_id in self.jobs:
+            if stage and request_id in self.jobs and not self.jobs[request_id].future.done():
                 self.store.update_task(request_id, "running", stage=stage)
             if stage == "INPUT_SENT" and data.get("detail"):
                 self.last_input_diag = str(data.get("detail"))
@@ -938,6 +948,8 @@ class BridgeService:
             if waiter and not waiter.done():
                 waiter.set_result({
                     "tab_id": data.get("tab_id"), "target_id": str(data.get("target_id", "")), "ready": bool(data.get("ready")),
+                    "url": str(data.get("url", "")), "conversation_id": str(data.get("conversation_id", "")),
+                    "reused": bool(data.get("reused")),
                 })
             return
         if kind == "new_chat_result":
@@ -957,21 +969,6 @@ class BridgeService:
                 waiter = waiters.get(request_id)
                 if waiter and not waiter.done():
                     waiter.set_exception(BridgeFailure(str(data.get("code", "EXTENSION_ERROR")), str(data.get("message", "扩展执行失败"))))
-        if request_id in self.image_waiters:
-            waiter = self.image_waiters[request_id]
-            if waiter and not waiter.done():
-                if kind == "result":
-                    result = str(data.get("result", ""))
-                    if result.strip():
-                        conversation_id = str(data.get("conversation_id") or "current")
-                        self.store.upsert_conversation(conversation_id, connection.target_id if connection else "")
-                        self.store.append_message(conversation_id, str(data.get("message_id", uuid.uuid4().hex)), "assistant", result, text_hash("assistant", result))
-                        waiter.set_result({"result": result, "conversation_id": conversation_id})
-                    else:
-                        waiter.set_exception(BridgeFailure("EMPTY_RESPONSE", "ChatGPT 返回空内容"))
-                elif kind == "error":
-                    waiter.set_exception(BridgeFailure(str(data.get("code", "EXTENSION_ERROR")), str(data.get("message", "扩展执行失败"))))
-            return
         job = self.jobs.get(request_id)
         if not job or job.future.done():
             return
@@ -982,17 +979,21 @@ class BridgeService:
             if result.strip():
                 conversation_id = str(data.get("conversation_id") or job.conversation_id)
                 job.conversation_id = conversation_id
+                self.store.set_task_conversation(request_id, conversation_id)
                 self.store.update_task(request_id, "completed", result=result)
                 self.store.upsert_conversation(conversation_id, job.target_id)
                 self.store.append_message(conversation_id, str(data.get("message_id", uuid.uuid4().hex)), "assistant", result, text_hash("assistant", result))
-                job.future.set_result({"result": result, "conversation_id": conversation_id})
+                reply = {"result": result, "conversation_id": conversation_id}
+                if job.fingerprint:
+                    reply["uploaded_image_count"] = data.get("uploaded_image_count")
+                job.future.set_result(reply)
             else:
                 self.store.update_task(request_id, "failed", error_code="EMPTY_RESPONSE", error_message="ChatGPT 返回空内容")
                 job.future.set_exception(BridgeFailure("EMPTY_RESPONSE", "ChatGPT 返回空内容"))
         elif kind == "error":
             code = str(data.get("code", "EXTENSION_ERROR"))
             detail = str(data.get("message", "扩展执行失败"))
-            if code in {"DEBUGGER_BUSY", "CDP_FAILED"}:
+            if not job.fingerprint and code in {"DEBUGGER_BUSY", "CDP_FAILED"}:
                 try:
                     if await self._run_sendinput(job.prompt):
                         await connection.websocket.send_json(make_message(
@@ -1100,7 +1101,7 @@ class BridgeService:
                 raise BridgeFailure("EXTENSION_NOT_CONNECTED", "浏览器扩展尚未连接")
             await self.wait_for_rate_limit()
             input_backend = str(job.input_backend or self.config.get("input_backend", "cdp"))
-            if input_backend == "sendinput":
+            if not job.fingerprint and input_backend == "sendinput":
                 try:
                     await target.websocket.send_json(make_message("focus", target_id=job.target_id))
                 except Exception:
@@ -1109,13 +1110,21 @@ class BridgeService:
                 if not await self._run_sendinput(job.prompt):
                     raise BridgeFailure("SENDINPUT_FAILED", "系统级输入助手未找到浏览器窗口或输入失败")
                 input_backend = "verify"
-            await target.websocket.send_json(make_message(
-                "task", request_id=job.request_id, target_id=job.target_id,
-                conversation_id=job.conversation_id, prompt=job.prompt,
-                expected_format=job.expected_format, timeout_ms=job.timeout_ms,
-                persona_id=job.persona_id, task_group_id=job.task_group_id,
-                input_backend=input_backend,
-            ))
+            if job.fingerprint:
+                await target.websocket.send_json(make_message(
+                    "send_image", request_id=job.request_id, target_id=job.target_id,
+                    conversation_id=job.conversation_id, prompt=job.prompt,
+                    expected_format=job.expected_format, timeout_ms=job.timeout_ms,
+                    image_path=job.image_path, skip_paste=job.skip_paste,
+                ))
+            else:
+                await target.websocket.send_json(make_message(
+                    "task", request_id=job.request_id, target_id=job.target_id,
+                    conversation_id=job.conversation_id, prompt=job.prompt,
+                    expected_format=job.expected_format, timeout_ms=job.timeout_ms,
+                    persona_id=job.persona_id, task_group_id=job.task_group_id,
+                    input_backend=input_backend,
+                ))
             self.store.update_task(job.request_id, "running", stage="SUBMITTED")
             grace_ms = max(0, int(self.config.get("timeout_grace_ms", 5000)))
             result = await asyncio.wait_for(
@@ -1134,7 +1143,7 @@ class BridgeService:
             checklist = await self._classify_timeout(job, target)
             classification = str(checklist.get("classification", "timeout"))
             last_text = str(checklist.get("last_text", ""))
-            if classification == "completed_but_missed" and last_text.strip():
+            if not job.fingerprint and classification == "completed_but_missed" and last_text.strip():
                 conversation_id = str(checklist.get("conversation_id") or job.conversation_id)
                 self.store.update_task(job.request_id, "completed", result=last_text, stage="COMPLETED")
                 self.store.upsert_conversation(conversation_id, job.target_id)
@@ -1164,6 +1173,8 @@ class BridgeService:
                 self.active_jobs.pop(job.target_id, None)
             if self.current_job is job:
                 self.current_job = None
+            if job.fingerprint:
+                self.jobs.pop(job.request_id, None)
 
 
 SERVICE_KEY = web.AppKey("service", BridgeService)

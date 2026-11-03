@@ -27,6 +27,7 @@ def main() -> int:
     parser.add_argument("prompt", nargs="?", default="", help="提示词正文（--last 模式可省略）")
     parser.add_argument("--timeout-ms", type=int, default=180000, help="等待回答超时，默认 180000")
     parser.add_argument("--target", default="", help="target_id，默认自动选择绑定标签页")
+    parser.add_argument("--url", default="", help="指定历史 ChatGPT 会话 URL；复用或打开该聊天后继续")
     parser.add_argument("--last", action="store_true", help="只读取指定会话/最近回答，不发新消息")
     parser.add_argument("--conversation", default="current", help="会话 id")
     args = parser.parse_args()
@@ -35,18 +36,26 @@ def main() -> int:
         parser.error("prompt 不能为空（或使用 --last 只读最近回答）")
 
     from gpt_web_mcp.client import BridgeClient, BridgeError  # noqa: E402
+    from gpt_web_mcp.agent_cli import select_target
 
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     client = BridgeClient(timeout=args.timeout_ms / 1000 + 20)
     try:
-        client.ensure_running(wait_seconds=15)
+        if args.url:
+            if args.target or args.conversation != "current":
+                parser.error("--url 不与 --target/--conversation 同用，避免指定不同会话")
+            opened = client.open_conversation(args.url)
+            args.target = opened["target_id"]
+            args.conversation = opened["conversation_id"]
+        status = client.status()
         if args.last:
             result = client.latest_message(args.conversation)
             print(json.dumps(result, ensure_ascii=False, indent=2))
         else:
+            target = select_target(status, args.target)
             result = client.send(
                 args.prompt, args.conversation, "text",
-                args.timeout_ms, args.target,
+                args.timeout_ms, target,
             )
             print(json.dumps({
                 "conversation_id": result.get("conversation_id"),
@@ -54,7 +63,7 @@ def main() -> int:
             }, ensure_ascii=False, indent=2, default=str))
         return 0
     except BridgeError as error:
-        print(json.dumps({"code": error.code, "message": error.message}, ensure_ascii=False, indent=2))
+        print(json.dumps({"code": error.code, "message": error.message, "request_id": error.request_id, "next_action": "查询原任务，不自动重复发送"}, ensure_ascii=False, indent=2))
         return 1
     except Exception as error:  # pragma: no cover
         print(json.dumps({"code": "UNEXPECTED", "message": str(error)}, ensure_ascii=False, indent=2))

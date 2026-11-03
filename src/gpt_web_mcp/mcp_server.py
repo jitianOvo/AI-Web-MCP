@@ -66,11 +66,18 @@ if FastMCP is not None:
         return client.latest_message(conversation_id)
 
     @mcp.tool()
-    def open_chatgpt_tab() -> dict[str, Any]:
-        """Open a new ChatGPT tab and wait until the page is ready and bound."""
+    def open_chatgpt_tab(url: str = "") -> dict[str, Any]:
+        """Open/bind a ChatGPT URL; reuse an existing matching conversation tab. Omit URL for a new tab."""
         client = BridgeClient()
         client.ensure_running()
-        return client.open_tab()
+        return client.open_tab(url)
+
+    @mcp.tool()
+    def open_chatgpt_conversation(url: str) -> dict[str, Any]:
+        """Continue an existing ChatGPT /c/<id> URL. Reuse or open exactly that chat and return target_id, conversation_id, url and readiness; does not send a message or create a new chat."""
+        client = BridgeClient()
+        client.ensure_running()
+        return client.open_conversation(url)
 
     @mcp.tool()
     def new_chat(target_id: str = "") -> dict[str, Any]:
@@ -133,17 +140,19 @@ if FastMCP is not None:
         return client.send(content, conversation_id, expected_format, timeout_ms, target_id, persona_id, task_group_id)
 
     @mcp.tool()
-    def ask_chatgpt_image(image_path: str, question: str = "请描述这张图片", conversation_id: str = "current", timeout_ms: int = 600000, target_id: str = "") -> dict[str, Any]:
+    def ask_chatgpt_image(image_path: str, question: str = "请描述这张图片", conversation_id: str = "current", timeout_ms: int = 600000, target_id: str = "", request_id: str = "") -> dict[str, Any]:
         """Send a local image to the bound ChatGPT web page for visual understanding.
-        Uses the clipboard-paste path; the web ChatGPT answers with a description or analysis.
-        Only needed when the current Codex model lacks vision."""
+        Uploads exactly one file and sends question once. Repeated identical requests
+        return the original result; use a new request_id for an intentional new analysis.
+        On timeout query chat_task_status / chat_read; never resend a text-only question.
+        Only needed when the current model lacks vision."""
         client = BridgeClient(timeout=timeout_ms / 1000 + 30)
         client.ensure_running()
         bound = client.bound_tab()
         effective_target = target_id or bound.get("bound_target_id", "")
         if not effective_target:
             raise RuntimeError("NO_BOUND_TAB: 请先绑定 ChatGPT 标签页。")
-        return client.send_image(image_path, question, conversation_id, "text", timeout_ms, effective_target)
+        return client.send_image(image_path, question, conversation_id, "text", timeout_ms, effective_target, request_id)
 
     @mcp.tool()
     def persona_upsert(persona_id: str, name: str, system_prompt: str = "", config_json: str = "{}") -> dict[str, Any]:

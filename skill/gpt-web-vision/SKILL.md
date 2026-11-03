@@ -1,81 +1,77 @@
 ---
 name: gpt-web-vision
-description: 当当前 Codex 模型没有多模态视觉能力时，把本地图片交给网页端 ChatGPT 理解。通过系统剪贴板 + 浏览器粘贴把图片送入已登录的 ChatGPT 网页，配合提示词读取图片描述/定位/文字识别，再把回复返回给 Codex。只用于无视觉模型的场景；若当前模型本身具备视觉能力则不需要本技能。
+description: 纯文本 AI Agent 的本地图片理解入口。通过已登录的网页 ChatGPT 返回图片描述、文字、布局或坐标；适用于 Milk Code、DeepSeek 等无视觉模型。已有视觉能力时无需调用。
 ---
 
-# GPT Web 视觉桥（无视觉模型时的图片理解）
+# 一次调用取得视觉结果
 
-## 适用场景
+先使用下面的入口，不要自己编写剪贴板、浏览器上传或重试代码。
 
-- 当前 Codex 模型是纯大语言模型（如 DeepSeek 中转站），无法直接看图。
-- 任务需要：截图理解、图片定位、看窗口、看图识字、UI 走查、复杂图片语义分析。
-- 已有 OCR 但不足以处理复杂图片语义时，用网页 ChatGPT 作为视觉大脑。
+## 有 MCP 工具时
 
-## 前置条件
+1. 调用 `browser_status`。要求 `bridge=online`、`paused=false`。
+2. 查看 `targets`，选择 `tab_bound=true` 且 `page_ready=true` 的目标。仅一个就绪目标则直接使用；多个则根据当前任务指定 `target_id`。不要根据 Edge/Chrome 名字或列表第一项猜测。
+3. 只调用一次 `ask_chatgpt_image`，用具名参数：
 
-1. Bridge 在线、扩展已连接、ChatGPT 标签页已绑定（`browser_status`）。
-2. 图片是本地文件（PNG/JPG 等），路径可访问。
-3. 使用 `ask_chatgpt_image(image_path, question)` 或底层 `send_image`。
-
-## 原理与流程
-
-```text
-Codex（无视觉）
-  -> ask_chatgpt_image(image_path, question)
-  -> Bridge：PowerShell 把图片写入系统剪贴板
-  -> Bridge：调用 gpt_sendinput.exe --paste（系统级 Ctrl+V，不依赖窗口焦点）
-  -> 扩展：等待网页上传完成
-  -> 扩展：把 question 追加到 composer 并发送
-  -> 网页 ChatGPT 理解图片并回答
-  -> Bridge 读取完整回答返回 Codex
+```json
+{
+  "image_path": "本次图片的绝对路径",
+  "question": "本次需要从图片中得到的具体信息",
+  "target_id": "上一步得到的实际 target_id",
+  "timeout_ms": 180000,
+  "request_id": "本次任务的唯一ID"
+}
 ```
 
-两个入口：
+4. 成功时读取 `result`，把它用于当前任务。调用本身已经上传图片、发送问题并等待答案；不要再调用 `chat_send` 发“请描述图片”，不要继续粘图。
 
-- `ask_chatgpt_image(image_path, question)`：自动粘贴新图。
-- `send_image_only(question)`：composer 里已有图片时，只追加问题并发送（`skip_paste=True`）。
+## 没有 MCP 工具时：用现成脚本
 
-## MCP 工具
+要在指定旧聊天中看图，MCP 先用 `open_chatgpt_conversation(url)` 获取目标并把
+`target_id` 传给 `ask_chatgpt_image`。CLI 可直接在 `vision` 命令后加
+`--url 'https://chatgpt.com/c/<conversation_id>'`，不与 `--target` 同时使用。
 
-| 工具 | 说明 |
+Windows PowerShell 7，从任意工作目录运行。只替换图片路径与问题；有多个就绪目标时追加 `--target 实际target_id`。
+
+只读自检：
+
+```powershell
+& 'D:\桌面\Work\GPT Web MCP\runtime\venv\Scripts\python.exe' 'C:\Users\20970\.codex\skills\gpt-web-vision\scripts\vision.py' doctor
+```
+
+一次看图（自动选择唯一就绪目标，自动内容去重）：
+
+```powershell
+& 'D:\桌面\Work\GPT Web MCP\runtime\venv\Scripts\python.exe' 'C:\Users\20970\.codex\skills\gpt-web-vision\scripts\vision.py' vision --image '图片绝对路径' --question '列出图中文字、主要布局，标出目标按钮的位置'
+```
+
+需要可追踪任务时追加 `--request-id vision-本次唯一ID`；长问题写到 UTF-8 文件，使用 `--question-file '问题文件绝对路径'`。`--output '结果文件绝对路径'` 可保存 JSON。脚本退出码 0 表示成功、1 表示失败，stdout 始终输出 UTF-8 JSON。
+
+查询已有任务，绝不重新发送：
+
+```powershell
+& 'D:\桌面\Work\GPT Web MCP\runtime\venv\Scripts\python.exe' 'C:\Users\20970\.codex\skills\gpt-web-vision\scripts\vision.py' task --request-id '原request_id'
+```
+
+脚本会处理导入路径、参数编码、目标选择、重复请求和错误输出。省略 ID 时也会在发送前计算稳定 ID，断线错误仍返回该 ID，按原 ID 查询即可。不要把项目路径当作当前工作目录要求，不需要创建临时 Python 文件。不在本机安装时设置 `GPT_WEB_MCP_ROOT` 为实际项目目录，并使用实际 Python 与本技能脚本路径。
+
+## 判断结果与停止条件
+
+| 返回 | 下一步 |
 |---|---|
-| `ask_chatgpt_image(image_path, question)` | 传本地图片 + 问题，网页 ChatGPT 看图回答 |
-| `chat_read` / `chat_wait_event` | 读取或等待视觉回答 |
-| `chat_cancel` | 终止卡住的图片任务 |
+| `success=true`，有 `result` | 直接使用答案；`deduplicated=true` 是复用了原结果，同样算成功 |
+| `DELIVERY_UNCERTAIN` / `RESPONSE_TIMEOUT` | 用原 ID 查询任务；completed 读取 task.result，running 等待；不要自动换 ID 或补发文字 |
+| `COMPOSER_NOT_EMPTY` | 停止本次发送，报告目标输入框已有草稿/附件；不得擅自清除或再次追加 |
+| `NO_READY_TARGET` / `TARGET_NOT_READY` / `IMAGE_INPUT_NOT_FOUND` | 自检目标，确认处于正常 ChatGPT 聊天模式；Codex 模式不是图片桥目标 |
+| `TARGET_REQUIRED` | 从自检返回的就绪列表选择与当前任务对应的目标 |
+| `BRIDGE_OFFLINE` | 用 `Start-Process -WindowStyle Hidden` 启动项目 `build\GPT Web MCP.exe`，等自检在线后再执行一次 |
+| `PAUSED` / `PAGE_GENERATING` / `EXTENSION_BUSY` | 等待或按当前任务授权取消原任务；不要循环发送 |
+| 上传失败、断线、重启、任务 failed/interrupted | 保留原 ID 与错误，检查网页和任务记录；需要新任务时明确建立新 ID |
 
-## 提示词模板
+每个新任务记住 `request_id`；恢复原任务复用该 ID。省略 ID 时同一目标、会话、图片内容和问题自动去重。要主动重新分析相同内容，传新的 ID。文件须为本地图片，最大 20 MiB。Bridge 0.1.30 起直接文件上传，不用系统剪贴板。
 
-```
-请仔细查看这张图片，然后回答：
-1) 图片里有什么（对象/文字/布局）？
-2) 与问题 {问题} 相关的位置或细节是什么？
-3) 若涉及文字，逐字列出看到的文字内容。
-用中文回答，直接给结论。
-```
+`send_image_only` 只适用于已明确存在附件的草稿，不是上传失败后的自动备用入口。
 
-定位类任务追加：
+## 让问题更准确
 
-```
-请用坐标或相对方位描述目标元素的位置（上/下/左/右/中心，或百分比），
-不要只描述颜色和风格。
-```
-
-截图类任务（Codex 侧先截图）：
-
-```
-先用系统截图工具截取目标窗口/区域保存为 PNG，
-再调用 ask_chatgpt_image 让网页 ChatGPT 描述。
-```
-
-## 故障处理
-
-- `IMAGE_UPLOAD_TIMEOUT`：粘贴后未在 composer 确认上屏。先检查窗口是否被占用/网络是否慢；重试一次；若持续失败改用 `send_image_only` 在已粘贴图片上直接提问。
-- `CLIPBOARD_FAILED`：PowerShell 写剪贴板失败，确认图片路径有效、PowerShell 未被策略拦截。
-- `SENDINPUT_MISSING` / `SENDINPUT_PASTE_FAILED`：`build/gpt_sendinput.exe` 缺失或未编译 --paste 模式，运行 `scripts/build_exe.cmd`（含 gpt_sendinput 编译）或单独编译 `launcher/sendinput.cpp`。
-- `EXTENSION_NOT_CONNECTED`：扩展未连接 Bridge，先检查扩展状态。
-
-## 边界
-
-- 本技能只作为视觉兜底：若当前 Codex 模型已具备视觉，直接用本地工具看图，不要绕道网页。
-- 不上传到第三方 API；图片只进入用户已登录的 ChatGPT 网页会话。
-- 不修改网页私有后端协议，全程走正常网页交互。
+根据任务要求提问：识字要求逐字抄录；定位要求返回像素坐标或百分比、并说明图片尺寸；界面操作要求列出按钮文字及相对位置。让网页区分“确实看见”和“不确定”。不需要额外向网页发送角色声明或规划请求，除非当前任务确实要求规划。

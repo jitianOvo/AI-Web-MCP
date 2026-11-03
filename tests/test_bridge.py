@@ -1,6 +1,7 @@
 import asyncio
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 from aiohttp import ClientSession, web
@@ -10,6 +11,57 @@ from gpt_web_mcp import __version__ as bridge_version
 
 
 class BridgeRoundTripTests(unittest.IsolatedAsyncioTestCase):
+    async def test_open_history_url_contract_and_error_propagation(self):
+        headers = {"X-Bridge-Token": self.token}
+        invalid = await self.session.post(self.base_url + "/api/tabs/open", headers=headers, json={"url": "https://evil.example/c/id"})
+        self.assertEqual((await invalid.json())["error"]["code"], "INVALID_CHATGPT_URL")
+        ws = await self.session.ws_connect(self.ws_url, headers={"Origin": "chrome-extension://fixture"})
+        await ws.receive_json()
+        await ws.send_json({"type": "hello", "target_id": "unbound", "tab_bound": False, "page_ready": False})
+        url = "https://chatgpt.com/c/old-123"
+        task = asyncio.create_task(self.session.post(self.base_url + "/api/tabs/open", headers=headers, json={"url": url}))
+        message = await ws.receive_json()
+        self.assertEqual(message["url"], url)
+        await ws.send_json({"type": "open_result", "request_id": message["request_id"], "tab_id": 7,
+                           "target_id": "tab-7", "ready": True, "url": url, "conversation_id": "old-123", "reused": True})
+        # A successful browser reply alone must not expose an unregistered target.
+        await asyncio.sleep(0.1)
+        self.assertFalse(task.done())
+        target_ws = await self.session.ws_connect(self.ws_url, headers={"Origin": "chrome-extension://fixture"})
+        await target_ws.receive_json()
+        await target_ws.send_json({"type": "hello", "target_id": "tab-7", "tab_id": 7,
+                                   "tab_bound": True, "page_ready": True, "tab_url": "https://chatgpt.com/c/wrong"})
+        await asyncio.sleep(0.1)
+        self.assertFalse(task.done())
+        await target_ws.send_json({"type": "status", "target_id": "tab-7", "tab_id": 7,
+                                   "tab_bound": True, "page_ready": True, "tab_url": url})
+        body = await (await task).json()
+        self.assertEqual(body["conversation_id"], "old-123")
+        self.assertEqual(body["url"], url)
+        self.assertTrue(body["reused"])
+        task = asyncio.create_task(self.session.post(self.base_url + "/api/tabs/open", headers=headers, json={"url": url}))
+        message = await ws.receive_json()
+        await ws.send_json({"type": "error", "request_id": message["request_id"], "code": "CONVERSATION_URL_MISMATCH", "message": "redirected"})
+        body = await (await task).json()
+        self.assertEqual(body["error"]["code"], "CONVERSATION_URL_MISMATCH")
+        await target_ws.close()
+        await ws.close()
+
+    async def test_open_target_without_registration_fails_instead_of_success(self):
+        ws = await self.session.ws_connect(self.ws_url, headers={"Origin": "chrome-extension://fixture"})
+        await ws.receive_json()
+        await ws.send_json({"type": "hello", "target_id": "unbound", "tab_bound": False})
+        with patch("gpt_web_mcp.bridge.OPEN_TARGET_READY_TIMEOUT", 0.1):
+            task = asyncio.create_task(self.session.post(self.base_url + "/api/tabs/open",
+                headers={"X-Bridge-Token": self.token}, json={"url": "https://chatgpt.com/c/missing"}))
+            message = await ws.receive_json()
+            await ws.send_json({"type": "open_result", "request_id": message["request_id"], "target_id": "tab-missing", "tab_id": 99, "ready": True})
+            body = await (await task).json()
+        self.assertFalse(body["success"])
+        self.assertEqual(body["error"]["code"], "TARGET_NOT_READY")
+        self.assertFalse(self.app[SERVICE_KEY].open_waiters)
+        await ws.close()
+
     async def asyncSetUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.token = "fixture-token"
@@ -415,6 +467,7 @@ class BridgeRoundTripTests(unittest.IsolatedAsyncioTestCase):
         open_message = await ws.receive_json()
         self.assertEqual(open_message["type"], "open_tab")
         await ws.send_json({"type": "open_result", "request_id": open_message["request_id"], "tab_id": 21, "target_id": "tab-21", "ready": True, "success": True})
+        await ws.send_json({"type": "status", "target_id": "tab-21", "tab_id": 21, "tab_bound": True, "page_ready": True, "tab_url": "https://chatgpt.com/"})
         open_body = await (await open_task).json()
         self.assertEqual(open_body["target_id"], "tab-21")
         new_task = asyncio.create_task(self.session.post(self.base_url + "/api/chat/new", headers=token_headers, json={}))
@@ -465,6 +518,104 @@ class BridgeRoundTripTests(unittest.IsolatedAsyncioTestCase):
         await ws.send_json({"type": "result", "request_id": "stage-req", "conversation_id": "stage-conv", "message_id": "a1", "result": "done"})
         response = await send_task
         self.assertEqual((await response.json())["result"], "done")
+        await ws.close()
+
+    async def image_fixture(self):
+        image = Path(self.temp_dir.name) / "sample.png"
+        image.write_bytes(b"\x89PNG\r\n\x1a\nfixture")
+        ws = await self.session.ws_connect(self.ws_url, headers={"Origin": "chrome-extension://fixture"})
+        await ws.receive_json()
+        await ws.send_json({"type": "hello", "tab_bound": True, "page_ready": True, "target_id": "vision", "tab_id": 30})
+        await asyncio.sleep(0.01)
+        return ws, {"image_path": str(image), "prompt": "describe", "target_id": "vision", "timeout_ms": 2000}
+
+    async def post_image(self, payload):
+        return await self.session.post(self.base_url + "/api/chat/send-image", headers={"X-Bridge-Token": self.token}, json=payload)
+
+    async def test_image_duplicates_join_then_replay_from_storage(self):
+        ws, payload = await self.image_fixture()
+        first = asyncio.create_task(self.post_image(payload))
+        task = await ws.receive_json()
+        self.assertEqual(task["type"], "send_image")
+        self.assertEqual(task["image_path"], payload["image_path"])
+        self.assertNotIn("pasted", task)
+        second = asyncio.create_task(self.post_image(payload))
+        await asyncio.sleep(0.05)
+        self.assertEqual(len(self.app[SERVICE_KEY].jobs), 1)
+        await ws.send_json({"type": "result", "request_id": task["request_id"], "conversation_id": "vision-conv", "result": "one image"})
+        bodies = [await (await first).json(), await (await second).json()]
+        self.assertEqual(bodies[0]["request_id"], bodies[1]["request_id"])
+        replay = await (await self.post_image(payload)).json()
+        self.assertTrue(replay["deduplicated"])
+        self.assertEqual(replay["result"], "one image")
+        saved = self.app[SERVICE_KEY].store.get_task(task["request_id"])
+        self.assertEqual(saved["state"], "completed")
+        self.assertTrue(saved["fingerprint"])
+        self.assertEqual(saved["conversation_id"], "vision-conv")
+        self.assertEqual(replay["conversation_id"], "vision-conv")
+        with self.assertRaises(asyncio.TimeoutError):
+            await asyncio.wait_for(ws.receive_json(), 0.05)
+        await ws.close()
+
+    async def test_images_share_text_queue_and_cancel(self):
+        ws, payload = await self.image_fixture()
+        first = asyncio.create_task(self.session.post(self.base_url + "/api/chat/send", headers={"X-Bridge-Token": self.token}, json={"request_id": "text-first", "content": "hello", "target_id": "vision", "timeout_ms": 2000}))
+        self.assertEqual((await ws.receive_json())["type"], "task")
+        image = asyncio.create_task(self.post_image(payload))
+        deadline = asyncio.get_running_loop().time() + 1
+        while self.app[SERVICE_KEY].pending_queue_size() != 1 and asyncio.get_running_loop().time() < deadline:
+            await asyncio.sleep(0.01)
+        self.assertEqual(self.app[SERVICE_KEY].pending_queue_size(), 1)
+        await ws.send_json({"type": "result", "request_id": "text-first", "result": "ok"})
+        await first
+        task = await ws.receive_json()
+        cancel = await self.session.post(self.base_url + "/api/chat/cancel/" + task["request_id"], headers={"X-Bridge-Token": self.token})
+        self.assertTrue((await cancel.json())["cancelled"])
+        self.assertEqual((await ws.receive_json())["type"], "cancel")
+        self.assertEqual((await (await image).json())["error"]["code"], "REQUEST_CANCELLED")
+        await ws.close()
+
+    async def test_image_failure_is_not_redispatched_and_id_conflicts(self):
+        ws, payload = await self.image_fixture()
+        payload["request_id"] = "vision-explicit"
+        first = asyncio.create_task(self.post_image(payload))
+        task = await ws.receive_json()
+        await ws.send_json({"type": "error", "request_id": task["request_id"], "code": "IMAGE_UPLOAD_TIMEOUT", "message": "not uploaded"})
+        self.assertEqual((await (await first).json())["error"]["code"], "IMAGE_UPLOAD_TIMEOUT")
+        self.assertEqual((await (await self.post_image(payload)).json())["error"]["code"], "IMAGE_UPLOAD_TIMEOUT")
+        conflict = await self.post_image({**payload, "prompt": "different"})
+        self.assertEqual(conflict.status, 409)
+        with self.assertRaises(asyncio.TimeoutError):
+            await asyncio.wait_for(ws.receive_json(), 0.05)
+        await ws.close()
+
+    async def test_image_disconnect_is_recorded(self):
+        ws, payload = await self.image_fixture()
+        first = asyncio.create_task(self.post_image(payload))
+        task = await ws.receive_json()
+        await ws.close()
+        self.assertEqual((await (await first).json())["error"]["code"], "EXTENSION_DISCONNECTED")
+        await asyncio.sleep(0.02)
+        self.assertEqual(self.app[SERVICE_KEY].store.get_task(task["request_id"])["state"], "failed")
+
+    async def test_image_pause_and_invalid_timeout_do_not_dispatch(self):
+        ws, payload = await self.image_fixture()
+        self.app[SERVICE_KEY].paused = True
+        self.assertEqual((await (await self.post_image(payload)).json())["error"]["code"], "PAUSED")
+        invalid = await self.post_image({**payload, "timeout_ms": "invalid"})
+        self.assertEqual((await invalid.json())["error"]["code"], "INVALID_REQUEST")
+        with self.assertRaises(asyncio.TimeoutError):
+            await asyncio.wait_for(ws.receive_json(), 0.05)
+        await ws.close()
+
+    async def test_skip_paste_does_not_require_image_file(self):
+        ws, payload = await self.image_fixture()
+        first = asyncio.create_task(self.post_image({**payload, "image_path": "", "skip_paste": True}))
+        task = await ws.receive_json()
+        self.assertTrue(task["skip_paste"])
+        self.assertEqual(task["image_path"], "")
+        await ws.send_json({"type": "error", "request_id": task["request_id"], "code": "IMAGE_NOT_ATTACHED", "message": "no image"})
+        self.assertEqual((await (await first).json())["error"]["code"], "IMAGE_NOT_ATTACHED")
         await ws.close()
 
 

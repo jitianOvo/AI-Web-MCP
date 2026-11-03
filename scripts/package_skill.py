@@ -17,15 +17,13 @@ def main() -> int:
         print(f"missing SKILL.md: {SKILL_DIR}")
         return 1
     BUILD.mkdir(parents=True, exist_ok=True)
-    files = sorted(SKILL_DIR.rglob("*"))
-    with zipfile.ZipFile(OUTPUT, "w", zipfile.ZIP_DEFLATED) as archive:
-        for path in files:
-            if path.is_dir():
-                continue
-            rel = path.relative_to(SKILL_DIR.parent)
-            archive.write(path, rel.as_posix())
-    print(f"skill_zip={OUTPUT}")
-    print(f"entries={sum(1 for _ in zipfile.ZipFile(OUTPUT).infolist())}")
+    for skill, output in ((SKILL_DIR, OUTPUT),
+            (ROOT / "skill" / "gpt-web-vision", BUILD / "GPT-Web-MCP-视觉技能.zip")):
+        with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as archive:
+            for path in sorted(skill.rglob("*")):
+                if path.is_file() and "__pycache__" not in path.parts:
+                    archive.write(path, path.relative_to(skill.parent).as_posix())
+        print(f"skill_zip={output}")
     return 0
 
 

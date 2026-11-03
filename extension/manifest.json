@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "GPT Web MCP Bridge",
-  "version": "0.1.29",
+  "version": "1.0.0",
   "description": "Connects a local MCP bridge to a user-bound ChatGPT tab.",
   "icons": {
     "16": "icons/16.png",

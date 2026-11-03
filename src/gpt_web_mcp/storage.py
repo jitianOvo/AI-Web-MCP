@@ -88,6 +88,8 @@ class Store:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_group ON tasks(task_group_id, created_at)")
             if "stage" not in columns:
                 conn.execute("ALTER TABLE tasks ADD COLUMN stage TEXT NOT NULL DEFAULT 'CREATED'")
+            if "fingerprint" not in columns:
+                conn.execute("ALTER TABLE tasks ADD COLUMN fingerprint TEXT NOT NULL DEFAULT ''")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_target ON tasks(target_id, state, created_at)")
             self._migrate_message_hash_constraint(conn)
             conn.execute(
@@ -312,15 +314,15 @@ class Store:
 
     def create_task(
         self, request_id: str, conversation_id: str, prompt: str, state: str = "queued",
-        target_id: str = "", persona_id: str = "", task_group_id: str = "",
+        target_id: str = "", persona_id: str = "", task_group_id: str = "", fingerprint: str = "",
     ) -> None:
         now = time.time()
         with self._session() as conn:
             conn.execute(
                 """INSERT OR REPLACE INTO tasks
-                   (request_id,conversation_id,target_id,persona_id,task_group_id,state,prompt,created_at,updated_at)
-                   VALUES(?,?,?,?,?,?,?,?,?)""",
-                (request_id, conversation_id, target_id, persona_id, task_group_id, state, prompt, now, now),
+                   (request_id,conversation_id,target_id,persona_id,task_group_id,state,prompt,created_at,updated_at,fingerprint)
+                   VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                (request_id, conversation_id, target_id, persona_id, task_group_id, state, prompt, now, now, fingerprint),
             )
 
     def list_tasks(self, task_group_id: str) -> list[dict[str, Any]]:
@@ -332,7 +334,7 @@ class Store:
             row = conn.execute(
                 """SELECT request_id,conversation_id,target_id,persona_id,task_group_id,state,
                    prompt,result,error_code,error_message,created_at,updated_at
-                   ,stage
+                   ,stage,fingerprint
                    FROM tasks WHERE request_id=?""",
                 (request_id,),
             ).fetchone()
@@ -352,3 +354,7 @@ class Store:
                        WHERE request_id=?""",
                     (state, result, error_code, error_message, time.time(), request_id),
                 )
+
+    def set_task_conversation(self, request_id: str, conversation_id: str) -> None:
+        with self._session() as conn:
+            conn.execute("UPDATE tasks SET conversation_id=? WHERE request_id=?", (conversation_id, request_id))

@@ -18,7 +18,9 @@ def main() -> int:
     latest_by_kind: dict[str, Path] = {}
     redundant: list[Path] = []
     for path in files:
-        kind = "extension" if "extension-" in path.name else "diagnostic" if "diagnostic-" in path.name else "other"
+        kind = ("extension" if "extension-" in path.name else "diagnostic" if "diagnostic-" in path.name
+                else "workflow-skill" if "工作流规范" in path.name else "vision-skill" if "视觉技能" in path.name
+                else path.stem)
         if kind not in latest_by_kind:
             latest_by_kind[kind] = path
         else:

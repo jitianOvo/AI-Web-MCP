@@ -7,6 +7,19 @@ from gpt_web_mcp.storage import Store
 
 
 class StorageTests(unittest.TestCase):
+    def test_image_identity_and_conversation_survive_restart(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "vision.sqlite3"
+            store = Store(path)
+            store.create_task("img1", "current", "describe", fingerprint="sha256-image-question")
+            store.set_task_conversation("img1", "actual-conversation")
+            store.update_task("img1", "completed", result="blue frame")
+            reopened = Store(path).get_task("img1")
+            self.assertEqual(reopened["fingerprint"], "sha256-image-question")
+            self.assertEqual(reopened["conversation_id"], "actual-conversation")
+            self.assertEqual(reopened["result"], "blue frame")
+            self.assertEqual(reopened["state"], "completed")
+
     def test_message_append_is_deduplicated(self):
         with tempfile.TemporaryDirectory() as directory:
             store = Store(Path(directory) / "test.sqlite3")
