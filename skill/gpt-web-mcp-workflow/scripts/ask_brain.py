@@ -49,7 +49,7 @@ def main() -> int:
             args.conversation = opened["conversation_id"]
         status = client.status()
         if args.last:
-            result = client.latest_message(args.conversation)
+            result = client.latest_message(args.conversation, args.target)
             print(json.dumps(result, ensure_ascii=False, indent=2))
         else:
             target = select_target(status, args.target)

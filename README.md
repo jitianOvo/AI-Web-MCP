@@ -1,6 +1,6 @@
 # AI-Web-MCP
 
-版本 **1.1.0**。把已登录的 ChatGPT 与智谱清言 GLM 网页接给本地 Agent，支持文本沟通、历史会话续聊、图片理解，以及先上传后提问的组合操作。
+版本 **1.1.1**。把已登录的 ChatGPT 与智谱清言 GLM 网页接给本地 Agent，支持文本沟通、历史会话续聊、图片理解，以及先上传后提问的组合操作。
 
 ## 四种能力，共用一座桥
 
@@ -87,3 +87,5 @@ GLM 可使用默认“这是什么”图片问题，也能指定识字、翻译�
 网页适配依赖页面结构；支持打开指定历史会话，不代表能搜索账户全部历史。图片接口当前为单张本地图片；本桥不会替 Agent 截屏或控制其他软件。
 
 更多资料：[架构](docs/ARCHITECTURE.md)、[版本记录](docs/RELEASES.md)、[Skill](skill/ai-web-mcp/SKILL.md)。
+
+写作卡片读取：`get_latest_message(conversation_id="会话ID", target_id="可选目标")` 优先读取网页上最新助手正文。写作标题与段落以 Markdown 保留；`source="cache"` 表示网页不可读时使用本地缓存，`sync_error` 说明原因。

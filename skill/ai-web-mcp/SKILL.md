@@ -47,3 +47,10 @@ $root = 'D:\桌面\Work\AI-Web-MCP'
 ## 能力边界
 
 历史搜索与导出只覆盖本地已经采集的消息。人格是任务提示模板。网页模型选择、账户权限与额度由原网页控制。仅使用已实现的文本与图片能力，不将任意附件、音视频或生成文件下载视为自动支持。
+
+
+## 读取写作框与最新回答
+
+使用 `get_latest_message(conversation_id=真实会话ID, target_id=可选目标)`；返回 `message.content` 是最新助手正文，写作框保留 Markdown 标题和段落。`source=live` 表示页面实时读取；`source=cache` 表示缓存回退，结合 `sync_error` 判断新鲜度。`message=null` 表示当前页面尚无助手正文，不把用户问题当成回答。
+
+历史页刚打开时会短暂等待正文加载；`sync_error=PAGE_LOADING` 表示仍在加载，可稍后重新读取，无需重新发送问题。

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "AI-Web-MCP Bridge",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Local AI web bridge for ChatGPT and GLM text, vision and reusable conversations.",
   "icons": {
     "16": "icons/16.png",

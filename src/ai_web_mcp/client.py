@@ -198,8 +198,9 @@ class BridgeClient:
         bound = next((item for item in tabs if item.get("bound_target_id")), None)
         return bound or {"tab_id": None, "bound_target_id": "", "title": "", "url": ""}
 
-    def latest_message(self, conversation_id: str = "current") -> dict[str, Any]:
-        return self._request("GET", f"/api/chat/latest?conversation_id={urllib.parse.quote(conversation_id)}")
+    def latest_message(self, conversation_id: str = "current", target_id: str = "") -> dict[str, Any]:
+        params = urllib.parse.urlencode({"conversation_id": conversation_id, "target_id": target_id})
+        return self._request("GET", "/api/chat/latest?" + params)
 
     def open_tab(self, url: str = "") -> dict[str, Any]:
         try:

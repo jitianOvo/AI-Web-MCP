@@ -14,7 +14,43 @@ function firstMatch(selectors) {
   return null;
 }
 
+function writingEditor(node) {
+  const selector = ".ProseMirror[contenteditable='true'][aria-label='开始写作'], .ProseMirror[contenteditable='true'][aria-label='Start writing']";
+  return node.matches?.(selector) ? node : node.querySelector?.(selector);
+}
+
+function writingMarkdown(editor) {
+  const render = (node, depth = 0) => {
+    if (node.nodeType === 3) return node.textContent || "";
+    if (node.nodeType !== 1) return "";
+    const tag = node.tagName.toLowerCase();
+    if (["button", "nav", "script", "style"].includes(tag) || node.getAttribute("aria-hidden") === "true") return "";
+    const children = () => Array.from(node.childNodes).map(child => render(child, depth)).join("");
+    if (/^h[1-6]$/.test(tag)) return `\n\n${"#".repeat(Number(tag[1]))} ${children().trim()}\n\n`;
+    if (tag === "p") return `\n\n${children().trim()}\n\n`;
+    if (tag === "br") return "\n";
+    if (tag === "strong" || tag === "b") return `**${children()}**`;
+    if (tag === "em" || tag === "i") return `*${children()}*`;
+    if (tag === "pre") return `\n\n\`\`\`\n${node.textContent.trimEnd()}\n\`\`\`\n\n`;
+    if (tag === "code") return `\`${children()}\``;
+    if (tag === "blockquote") return `\n\n${children().trim().split("\n").map(line => "> " + line).join("\n")}\n\n`;
+    if (tag === "ul" || tag === "ol") {
+      let number = Number(node.getAttribute("start") || 1);
+      const lines = Array.from(node.children).filter(child => child.tagName.toLowerCase() === "li").map(item => {
+        const body = Array.from(item.childNodes).map(child => render(child, depth + 1)).join("").trim();
+        const marker = tag === "ol" ? `${number++}. ` : "- ";
+        return body.split("\n").map((line, index) => (index ? "  " : marker) + line).join("\n");
+      });
+      return `\n\n${lines.join("\n")}\n\n`;
+    }
+    return children();
+  };
+  return render(editor).replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+}
+
 function cleanText(node) {
+  const editor = writingEditor(node);
+  if (editor) return writingMarkdown(editor);
   const clone = node.cloneNode(true);
   clone.querySelectorAll("button, nav, [aria-hidden='true']").forEach((item) => item.remove());
   return (clone.innerText || clone.textContent || "").replace(/\n{3,}/g, "\n\n").trim();
@@ -25,11 +61,19 @@ function messageNodes() {
   for (const selector of [...GPT_WEB_SELECTORS.userMessage, ...GPT_WEB_SELECTORS.assistantMessage]) {
     document.querySelectorAll(selector).forEach((node) => nodes.push(node));
   }
-  if (nodes.length) return Array.from(new Set(nodes));
-  for (const selector of GPT_WEB_SELECTORS.conversationTurn || []) {
-    document.querySelectorAll(selector).forEach((node) => nodes.push(node));
+  if (!nodes.length) {
+    for (const selector of GPT_WEB_SELECTORS.conversationTurn || []) {
+      document.querySelectorAll(selector).forEach((node) => nodes.push(node));
+    }
   }
-  return Array.from(new Set(nodes)).filter((node) => cleanText(node));
+  const unique = Array.from(new Set(nodes)).filter(node =>
+    !node.closest?.("[hidden], [aria-hidden='true']") &&
+    (!node.getClientRects || node.getClientRects().length > 0));
+  return unique.filter(node => !unique.some(other => other !== node && other.contains?.(node)))
+    .sort((a, b) => {
+      const position = a.compareDocumentPosition?.(b) || 0;
+      return position & 4 ? -1 : position & 2 ? 1 : 0;
+    }).filter(node => cleanText(node));
 }
 
 function roleFromNode(node) {
@@ -50,7 +94,8 @@ function messageFromNode(node) {
   const content = cleanText(node);
   if (!content) return null;
   const container = node.closest("[data-message-id]") || node.closest("article") || node;
-  let messageId = container.getAttribute("data-message-id");
+  let messageId = container.getAttribute("data-message-id") ||
+    node.closest?.("[data-chatgpt-selection-message-id]")?.getAttribute("data-chatgpt-selection-message-id");
   if (!messageId) {
     messageId = domMessageIds.get(container);
     if (!messageId) {
@@ -60,7 +105,8 @@ function messageFromNode(node) {
   }
   if (String(messageId).startsWith("request-placeholder")) return null;
   const contentHash = `${role}:${content}`;
-  return { message_id: messageId, role, content, content_hash: contentHash };
+  return { message_id: messageId, role, content, content_hash: contentHash,
+    ...(writingEditor(node) ? { content_format: "markdown", kind: "writing" } : {}) };
 }
 
 function answerNodes() {
@@ -229,7 +275,9 @@ function emitNewMessages() {
 async function flushBufferedMessages() {
   const conversation = conversationId();
   const entries = Array.from(pendingBufferedMessages.values());
-  const ordered = [...entries.filter((message) => message.role === "user"), ...entries.filter((message) => message.role !== "user")];
+  const positions = new Map(messageNodes().map(messageFromNode).filter(Boolean).map((message, index) => [message.message_id, index]));
+  const ordered = entries.filter(message => positions.has(message.message_id))
+    .sort((a, b) => positions.get(a.message_id) - positions.get(b.message_id));
   const sends = [];
   for (const message of ordered) {
     const key = `${message.message_id}:${message.content_hash}`;

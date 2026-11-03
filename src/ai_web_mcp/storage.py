@@ -207,6 +207,23 @@ class Store:
             ).fetchone()
         return dict(row) if row else None
 
+    def latest_assistant(self, conversation_id: str) -> dict[str, Any] | None:
+        with self._session() as conn:
+            row = conn.execute(
+                """SELECT sequence,message_id,conversation_id,role,content,observed_at
+                   FROM messages WHERE conversation_id=? AND role='assistant'
+                   ORDER BY observed_at DESC,sequence DESC LIMIT 1""", (conversation_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def get_message(self, conversation_id: str, message_id: str) -> dict[str, Any] | None:
+        with self._session() as conn:
+            row = conn.execute(
+                """SELECT sequence,message_id,conversation_id,role,content,observed_at
+                   FROM messages WHERE conversation_id=? AND message_id=?""", (conversation_id, message_id),
+            ).fetchone()
+        return dict(row) if row else None
+
     def list_messages(self, conversation_id: str, after_sequence: int = 0, limit: int = 100) -> list[dict[str, Any]]:
 
         with self._session() as conn:

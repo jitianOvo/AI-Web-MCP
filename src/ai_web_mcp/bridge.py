@@ -27,6 +27,7 @@ from .storage import Store
 from .targets import TargetRegistry, TargetSelectionError
 
 OPEN_TARGET_READY_TIMEOUT = 5.0
+LATEST_SYNC_TIMEOUT = 5.0
 
 
 class BridgeFailure(RuntimeError):
@@ -374,6 +375,8 @@ class BridgeService:
         payload = await request.json() if request.can_read_body else {}
         target = self.targets.choose()
         tab_id = int(payload.get("tab_id") or (target.state.get("tab_id") if target else 0) or 0)
+        if payload.get("refresh_tab") is False:
+            tab_id = 0
         live = [c for c in self.targets.connections.values() if not c.websocket.closed]
         if not live:
             return self.error("EXTENSION_NOT_CONNECTED", "浏览器扩展尚未连接", 503)
@@ -480,16 +483,83 @@ class BridgeService:
         if not self.authorized(request):
             return self.error("UNAUTHORIZED", "Bridge token 不正确", 401)
         conversation_id = str(request.query.get("conversation_id", "current"))
-        rows = self.store.search_messages(conversation_id=conversation_id, limit=1)
-        message = rows[0] if rows else None
+        requested_target = str(request.query.get("target_id", ""))
+        target = None
+        if requested_target:
+            target = self.targets.get(requested_target)
+            if not target or target.websocket.closed:
+                return self.error("TARGET_NOT_READY", "指定目标未连接", 409)
+            actual = self.target_conversation(target)
+            if conversation_id != "current" and actual != conversation_id:
+                return self.error("CONVERSATION_MISMATCH", "指定目标不属于请求的会话", 409)
+            conversation_id = actual
+        elif conversation_id == "current":
+            try:
+                target = self.targets.select()
+                conversation_id = self.target_conversation(target)
+            except TargetSelectionError as error:
+                if error.code != "NO_READY_TARGET":
+                    return self.error(error.code, str(error), 409)
+        else:
+            matches = [item for item in self.targets.connections.values()
+                       if not item.websocket.closed and self.targets.is_ready(item)
+                       and self.target_conversation(item) == conversation_id]
+            conversation = self.store.get_conversation(conversation_id)
+            target = next((item for item in matches if conversation and item.target_id == conversation["target_id"]), None)
+            if target is None and matches:
+                target = max(matches, key=lambda item: item.state.get("updated_at", 0))
+        source, sync_error = "cache", ""
+        message = self.store.latest_assistant(conversation_id)
+        if target and self.targets.is_ready(target):
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + LATEST_SYNC_TIMEOUT
+            tab_url = str(target.state.get("tab_url", ""))
+            try:
+                history_page = bool(conversation_id_from_url(detect_provider(tab_url), tab_url))
+            except ValueError:
+                history_page = False
+            try:
+                while True:
+                    request_id = new_request_id("latest")
+                    waiter = loop.create_future()
+                    self.sync_waiters[request_id] = waiter
+                    try:
+                        await target.websocket.send_json(make_message("sync", request_id=request_id, target_id=target.target_id, conversation_id=conversation_id))
+                        snapshot = await asyncio.wait_for(waiter, timeout=max(0.01, deadline - loop.time()))
+                    finally:
+                        self.sync_waiters.pop(request_id, None)
+                    if str(snapshot.get("conversation_id")) != conversation_id:
+                        raise BridgeFailure("CONVERSATION_MISMATCH", "页面在读取期间切换了会话")
+                    if snapshot.get("messages") or not history_page:
+                        break
+                    if deadline - loop.time() <= 0.25:
+                        raise BridgeFailure("PAGE_LOADING", "历史会话正文尚未加载")
+                    await asyncio.sleep(0.25)
+                assistants = [item for item in snapshot.get("messages", [])
+                              if item.get("role") == "assistant" and str(item.get("content", "")).strip()]
+                message = None
+                if assistants:
+                    latest = assistants[-1]
+                    message_id = str(latest.get("message_id") or new_request_id("message"))
+                    content = str(latest["content"])
+                    self.store.upsert_conversation(conversation_id, target.target_id,
+                        str(target.state.get("conversation_title", "")), str(target.state.get("tab_url", "")))
+                    self.store.append_message(conversation_id, message_id, "assistant", content, text_hash("assistant", content))
+                    message = self.store.get_message(conversation_id, message_id)
+                    message.update({key: latest[key] for key in ("kind", "content_format") if key in latest})
+                source = "live"
+            except (asyncio.TimeoutError, BridgeFailure, ConnectionError, RuntimeError) as error:
+                sync_error = getattr(error, "code", "SYNC_TIMEOUT" if isinstance(error, asyncio.TimeoutError) else "SYNC_FAILED")
         conversation = self.store.get_conversation(conversation_id)
-        generating = any(bool(connection.state.get("generating")) for connection in self.targets.connections.values())
+        generating = bool(target and target.state.get("generating"))
         return web.json_response({
             "success": True,
             "conversation_id": conversation_id,
             "title": conversation["title"] if conversation else "",
             "message": message,
             "response_state": "streaming" if generating else "idle",
+            "source": source,
+            "sync_error": sync_error,
         })
 
     async def handle_shutdown(self, request: web.Request) -> web.Response:

@@ -107,11 +107,11 @@ if FastMCP is not None:
         return client.bound_tab()
 
     @mcp.tool()
-    def get_latest_message(conversation_id: str = "current") -> dict[str, Any]:
-        """Read the most recent captured message and response state for a conversation."""
+    def get_latest_message(conversation_id: str = "current", target_id: str = "") -> dict[str, Any]:
+        """Read the latest assistant body, including formatted writing cards. Prefer live page order; source=cache and sync_error disclose fallback. target_id resolves duplicate views."""
         client = BridgeClient()
         client.ensure_running()
-        return client.latest_message(conversation_id)
+        return client.latest_message(conversation_id, target_id)
 
     @mcp.tool()
     def open_chatgpt_tab(url: str = "") -> dict[str, Any]:
