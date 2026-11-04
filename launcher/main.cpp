@@ -141,7 +141,7 @@ static void RefreshStatus() {
 
 static void UpdateMainText(HWND hwnd) {
     std::wstring text =
-        L"版本 1.1.1\r\n\r\n"
+        L"版本 1.1.2\r\n\r\n"
         L"桥服务: " + g_status_bridge + L"\r\n"
         L"扩展:   " + g_status_ext + L"\r\n"
         L"页面:   " + g_status_page + L"\r\n"

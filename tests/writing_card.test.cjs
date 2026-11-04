@@ -33,7 +33,10 @@ function load(nodes=[]) {
     if(selector==='[data-chatgpt-selection-message-id]')return nodes.filter(n=>'data-chatgpt-selection-message-id' in n.attrs);
     return [];
   }},chrome:{runtime:{sendMessage:async()=>({}),onMessage:{addListener(f){listener=f;}}}}};
- vm.createContext(c);vm.runInContext(fs.readFileSync('extension/selectors.js','utf8'),c);vm.runInContext(fs.readFileSync('extension/content.js','utf8'),c);
+ vm.createContext(c);vm.runInContext(fs.readFileSync('extension/selectors.js','utf8'),c);
+ const raw=fs.readFileSync('extension/content.js','utf8');
+ const source=raw.slice(raw.indexOf('let activeRequestId')).replace(/\}\)\(\);\s*$/,'');
+ vm.runInContext(source,c);
  c.sync=()=>{let result;listener({type:'bridge_sync'},{},r=>result=r);return result;};return c;
 }
 function editor(...children){return el('div',{class:'ProseMirror','contenteditable':'true','aria-label':'开始写作'},...children);}

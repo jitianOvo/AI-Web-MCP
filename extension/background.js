@@ -7,6 +7,7 @@ let boundTabs = {};
 let activeRequests = new Map();
 let heartbeatTimer = null;
 let pendingEventWrite = Promise.resolve();
+const pageScriptLoads = new Map();
 const MAX_PENDING_EVENTS = 500;
 
 chrome.storage.local.get(["boundTabs", "boundTabId"]).then(async (saved) => {
@@ -17,6 +18,9 @@ chrome.storage.local.get(["boundTabs", "boundTabId"]).then(async (saved) => {
   ensureReconnectAlarm();
   connectBridge(CONTROL_TARGET_ID);
   for (const targetId of Object.keys(boundTabs)) connectBridge(targetId);
+  for (const tabId of new Set(Object.values(boundTabs))) {
+    try { await ensurePageScript(Number(tabId)); } catch (_) {}
+  }
   autoBindSingleTab();
 });
 
@@ -395,8 +399,31 @@ async function getBoundTab(targetId) {
   }
 }
 
+async function ensurePageScript(tabId) {
+  try {
+    const state = await chrome.tabs.sendMessage(tabId, { type: "bridge_ping" });
+    if (state && typeof state.ready === "boolean") return state;
+  } catch (_) {}
+  if (!pageScriptLoads.has(tabId)) {
+    const loading = (async () => {
+      const tab = await chrome.tabs.get(tabId);
+      const provider = GPT_WEB_PROVIDERS.detect(tab?.url);
+      if (!provider) throw bridgeError("CHATGPT_TAB_NOT_FOUND", "指定标签页不是受支持的 AI 网页");
+      // A same-version runtime reload invalidates the old listener too.
+      await chrome.scripting.executeScript({ target: { tabId },
+        func: () => { delete globalThis.AI_WEB_CONTENT_VERSION; } });
+      await chrome.scripting.executeScript({ target: { tabId },
+        files: provider === "glm" ? ["glm.js"] : ["selectors.js", "content.js"] });
+      return await chrome.tabs.sendMessage(tabId, { type: "bridge_ping" });
+    })();
+    pageScriptLoads.set(tabId, loading);
+    loading.finally(() => pageScriptLoads.delete(tabId)).catch(() => {});
+  }
+  return await pageScriptLoads.get(tabId);
+}
+
 async function pageReady(tabId) {
-  try { return Boolean((await chrome.tabs.sendMessage(tabId, { type: "bridge_ping" }))?.ready); }
+  try { return Boolean((await ensurePageScript(tabId))?.ready); }
   catch (_) { return false; }
 }
 
@@ -443,6 +470,7 @@ async function sendStatus(targetId, type = "status") {
 
 async function runTask(message, socketTargetId) {
   const targetId = String(message.target_id || socketTargetId);
+  let inputDiag = "";
   if (activeRequests.has(targetId)) {
     sendToBridge(targetId, { type: "error", request_id: message.request_id, target_id: targetId, code: "EXTENSION_BUSY", message: "当前目标标签页仍在处理上一项任务" });
     return;
@@ -451,9 +479,9 @@ async function runTask(message, socketTargetId) {
   try {
     const tab = await getBoundTab(targetId);
     if (!tab) throw bridgeError("CHATGPT_TAB_NOT_FOUND", "请先绑定 ChatGPT 标签页");
+    await ensurePageScript(tab.id);
     if (message.provider && GPT_WEB_PROVIDERS.detect(tab.url) !== message.provider) throw bridgeError("PROVIDER_MISMATCH", "目标标签页与请求提供方不一致");
     const backend = String(message.input_backend || "cdp");
-    let inputDiag = "";
     let inputBackend = GPT_WEB_PROVIDERS.detect(tab.url) === "glm" ? "dom" : backend;
     if (backend === "cdp" && inputBackend === "cdp") {
       try {

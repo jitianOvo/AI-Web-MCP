@@ -1,3 +1,7 @@
+(() => {
+const contentVersion = chrome.runtime.getManifest?.().version || "development";
+if (globalThis.AI_WEB_CONTENT_VERSION === contentVersion) return;
+globalThis.AI_WEB_CONTENT_VERSION = contentVersion;
 let activeRequestId = "";
 let cancelledRequestId = "";
 const sentMessageKeys = new Set();
@@ -206,15 +210,31 @@ function userAttachmentCount(node) {
   return scope.querySelectorAll("img").length;
 }
 
-async function waitForUserMessage(prompt, timeoutMs = 10000, baseline = new Set()) {
+function userPromptMatches(content, prompt) {
   const norm = value => String(value || "").replace(/\s+/g, " ").trim();
-  const needle = norm(prompt);
+  if (norm(content) === norm(prompt)) return true;
+  // ChatGPT renders code delimiters in user messages instead of retaining
+  // their literal backticks. Compare the complete rendered text, never a prefix.
+  const source = String(prompt || "").trim();
+  const code = /^ {0,3}(`{3,}|~{3,})[^\n]*\n([\s\S]*?)\n {0,3}\1[ \t]*(?=\n|$)|(^|[^\\`])(`+)(?!`)([^\n]*?[^`])\4(?!`)/gm;
+  const literal = value => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\s+/g, "\\s+");
+  let pattern = "", offset = 0;
+  for (const match of source.matchAll(code)) {
+    const rendered = match[1] ? match[2] : match[3] + match[5];
+    // Some code spans stay literal while others render in the same message.
+    pattern += literal(source.slice(offset, match.index)) + `(?:${literal(match[0])}|${literal(rendered)})`;
+    offset = match.index + match[0].length;
+  }
+  return new RegExp("^" + pattern + literal(source.slice(offset)) + "$").test(norm(content));
+}
+
+async function waitForUserMessage(prompt, timeoutMs = 10000, baseline = new Set()) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (activeRequestId && cancelledRequestId === activeRequestId) throw bridgeError("REQUEST_CANCELLED", "请求已取消");
     for (const node of messageNodes().filter(n => roleFromNode(n) === "user")) {
       const message = messageFromNode(node);
-      if (message && !baseline.has(message.message_id) && (!needle || norm(message.content).includes(needle))) return true;
+      if (message && !baseline.has(message.message_id) && (!prompt || userPromptMatches(message.content, prompt))) return true;
     }
     await delay(200);
   }
@@ -591,7 +611,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     const needle = String(message.prompt || "").trim();
     const userOnScreen = userNodes.some((node) => {
       const text = cleanText(node);
-      return text && (!needle || text.includes(needle));
+      return text && (!needle || userPromptMatches(text, needle));
     });
     sendResponse({
       success: true,
@@ -638,3 +658,4 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
   return false;
 });
+})();

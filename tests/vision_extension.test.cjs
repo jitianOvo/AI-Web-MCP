@@ -15,9 +15,13 @@ function load(file, overrides = {}) {
       tabs: { onUpdated: { addListener() {} }, onRemoved: { addListener() {} }, onCreated: { addListener() {} } },
       alarms: { onAlarm: { addListener() {} } } }, ...overrides };
   vm.createContext(context);
+  if (file === 'content.js') context.chrome.runtime.onMessage.addListener = listener => {context.pageMessageListener = listener;};
   if (file === 'background.js') vm.runInContext(fs.readFileSync(path.join(__dirname, '../extension/providers.js'), 'utf8'), context);
   if (file === 'content.js') vm.runInContext(fs.readFileSync(path.join(__dirname, '../extension/selectors.js'), 'utf8'), context);
-  vm.runInContext(fs.readFileSync(path.join(__dirname, '../extension', file), 'utf8'), context);
+  let source = fs.readFileSync(path.join(__dirname, '../extension', file), 'utf8');
+  // Expose content-script closure functions to this isolated test VM.
+  if (file === 'content.js') source = source.slice(source.indexOf('let activeRequestId')).replace(/\}\)\(\);\s*$/, '');
+  vm.runInContext(source, context);
   return context;
 }
 
@@ -68,6 +72,109 @@ test('historical identical question cannot acknowledge new submission', async ()
   assert.equal(await c.waitForUserMessage('describe', 1, new Set(['old'])), false);
   c.messageFromNode = () => ({ message_id: 'new', content: 'describe' });
   assert.equal(await c.waitForUserMessage('describe', 10, new Set(['old'])), true);
+});
+
+test('rendered inline and fenced code can acknowledge the complete submitted text', async () => {
+  const c = load('content.js');
+  const prompt = 'Report\n\nBefore `: > trace` resets per_cpu/stats; call ``a`b`` safely.';
+  const content = 'Report\nBefore : > trace resets per_cpu/stats; call a`b safely.';
+  assert.equal(c.userPromptMatches(content, prompt), true);
+  assert.equal(c.userPromptMatches('Report Before : > trace resets per_cpu/stats; call ``a`b`` safely.', prompt), true);
+  assert.equal(c.userPromptMatches('Run\n: > trace\necho "done"\nEnd', 'Run\n```sh\n: > trace\necho "done"\n```\nEnd'), true);
+  assert.equal(c.userPromptMatches('const x = `literal`;\nDone', '```js\nconst x = `literal`;\n```\nDone'), true);
+  assert.equal(c.userPromptMatches('literal tick stays', 'literal `tick stays'), false);
+  assert.equal(c.userPromptMatches('literal `tick stays', 'literal `tick stays'), true);
+  assert.equal(c.userPromptMatches('Report Before : > other resets per_cpu/stats; call a`b safely.', prompt), false);
+  assert.equal(c.userPromptMatches('Report Before', prompt), false);
+  c.messageNodes = () => [{}]; c.roleFromNode = () => 'user';
+  c.messageFromNode = () => ({ message_id: 'new-code', content });
+  assert.equal(await c.waitForUserMessage(prompt, 20, new Set(['older'])), true);
+  let now = 0; c.Date = {now: () => now}; c.delay = async () => {now += 200;};
+  assert.equal(await c.waitForUserMessage(prompt, 20, new Set(['new-code'])), false);
+});
+
+test('timeout state checks use the same rendered-code matching as submission acknowledgement', () => {
+  const c = load('content.js'); let state;
+  c.messageNodes = () => [{}]; c.roleFromNode = () => 'user';
+  c.cleanText = () => 'Check : > trace now';
+  c.answerNodes = () => [];
+  c.domSnapshot = () => ({}); c.domDetail = () => ({}); c.userAttachmentCount = () => 0;
+  c.pageMessageListener({type: 'bridge_check_state', prompt: 'Check `: > trace` now'}, {}, value => {state = value;});
+  assert.equal(state.user_message_on_screen, true);
+  c.pageMessageListener({type: 'bridge_check_state', prompt: 'Check `: > other` now'}, {}, value => {state = value;});
+  assert.equal(state.user_message_on_screen, false);
+});
+
+test('task errors before typing are reported immediately and release the active target', async () => {
+  const c = load('background.js'); const events = [];
+  c.getBoundTab = async () => null;
+  c.sendToBridge = (_, message) => events.push(message);
+  c.sendStatus = async () => {};
+  await c.runTask({request_id: 'missing-tab', target_id: 'tab-1'}, 'tab-1');
+  assert.equal(events.length, 1);
+  assert.equal(events[0].type, 'error');
+  assert.equal(events[0].code, 'CHATGPT_TAB_NOT_FOUND');
+  assert.equal(vm.runInContext('activeRequests.size', c), 0);
+});
+
+test('page send failure after CDP typing retains its error and diagnostics without waiting for Bridge timeout', async () => {
+  const c = load('background.js'); const events = []; let deliveries = 0;
+  c.getBoundTab = async () => ({id: 1, url: 'https://chatgpt.com/c/fixture'});
+  c.ensurePageScript = async () => ({ready: true});
+  c.cdpTypeAndEnter = async () => vm.runInContext('cdpLastLog = {afterInsert: "typed"}', c);
+  c.sendTaskToPage = async () => {deliveries++; return {success: false, code: 'SEND_FAILED', message: 'Not acknowledged'};};
+  c.sendToBridge = (_, message) => events.push(message);
+  c.sendStatus = async () => {};
+  await c.runTask({request_id: 'send-failed', target_id: 'tab-1', prompt: 'typed'}, 'tab-1');
+  const errors = events.filter(e => e.type === 'error');
+  assert.equal(errors.length, 1);
+  assert.equal(errors[0].code, 'SEND_FAILED');
+  assert.match(errors[0].message, /Not acknowledged.*cdp=.*typed/);
+  assert.equal(deliveries, 1);
+  assert.equal(vm.runInContext('activeRequests.size', c), 0);
+});
+
+test('uncertain task delivery reports the original error once without resending', async () => {
+  const c = load('background.js'); const events = []; let deliveries = 0;
+  c.getBoundTab = async () => ({id: 1, url: 'https://chatgpt.com/c/fixture'});
+  c.ensurePageScript = async () => ({ready: true});
+  c.chrome.tabs.sendMessage = async () => {deliveries++; throw new Error('port closed');};
+  c.sendToBridge = (_, message) => events.push(message);
+  c.sendStatus = async () => {};
+  await c.runTask({request_id: 'uncertain', target_id: 'tab-1', input_backend: 'dom'}, 'tab-1');
+  assert.equal(events.length, 1);
+  assert.equal(events[0].code, 'DELIVERY_UNCERTAIN');
+  assert.equal(deliveries, 1);
+  assert.equal(vm.runInContext('activeRequests.size', c), 0);
+});
+
+test('extension reload restores a stale page script without refreshing the tab', async () => {
+  const c = load('background.js'); let injected = false; let injections = 0;
+  c.chrome.tabs.get = async () => ({url: 'https://chatgpt.com/c/fixture'});
+  c.chrome.tabs.sendMessage = async () => {
+    if (!injected) throw new Error('Receiving end does not exist');
+    return {ready: true};
+  };
+  c.chrome.tabs.reload = async () => {throw new Error('must preserve editing state');};
+  c.chrome.scripting = {executeScript: async args => {
+    if (args.func) {assert.equal(typeof args.func, 'function'); return;}
+    injections++; assert.deepEqual(Array.from(args.files), ['selectors.js', 'content.js']); injected = true;
+  }};
+  assert.deepEqual(await Promise.all([c.pageReady(1), c.pageReady(1)]), [true, true]);
+  assert.equal(injections, 1);
+  assert.equal(await c.pageReady(1), true);
+  assert.equal(injections, 1);
+});
+
+test('content script reinjection keeps one listener and observer per loaded version', () => {
+  const c = load('background.js'); let listeners = 0, observers = 0;
+  c.chrome.runtime.getManifest = () => ({version: 'fixture-version'});
+  c.chrome.runtime.onMessage.addListener = () => listeners++;
+  c.MutationObserver = class {observe() {observers++;}};
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '../extension/selectors.js'), 'utf8'), c);
+  const source = fs.readFileSync(path.join(__dirname, '../extension/content.js'), 'utf8');
+  vm.runInContext(source, c); vm.runInContext(source, c);
+  assert.equal(listeners, 1); assert.equal(observers, 1);
 });
 
 test('clicking send prefers enabled real button without synthetic Enter', () => {
